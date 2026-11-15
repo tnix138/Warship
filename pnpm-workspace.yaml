@@ -1,0 +1,10 @@
+packages:
+  - 'packages/*'
+
+# better-sqlite3 v13 ships N-API prebuilds for every tier-1 platform, so its
+# node-gyp build script is not needed and is intentionally not executed.
+# (Building from source requires Node headers, which are not available offline.)
+onlyBuiltDependencies:
+  - esbuild
+ignoredBuiltDependencies:
+  - better-sqlite3

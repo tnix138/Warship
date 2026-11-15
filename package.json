@@ -1,0 +1,41 @@
+{
+  "name": "warship",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "WarShip - a 2D online naval game for the browser with an authoritative server.",
+  "license": "AGPL-3.0-only",
+  "packageManager": "pnpm@10.34.9",
+  "engines": {
+    "node": ">=22.12.0",
+    "pnpm": ">=10.0.0"
+  },
+  "scripts": {
+    "dev": "pnpm run build:shared && concurrently --kill-others-on-fail --names shared,server,client --prefix-colors magenta,cyan,green \"pnpm --filter @warship/shared dev\" \"pnpm --filter @warship/server dev\" \"pnpm --filter @warship/client dev\"",
+    "dev:server": "pnpm --filter @warship/shared build && pnpm --filter @warship/server dev",
+    "dev:client": "pnpm --filter @warship/shared build && pnpm --filter @warship/client dev",
+    "build": "pnpm run build:shared && pnpm --filter @warship/server --filter @warship/client run build",
+    "build:shared": "pnpm --filter @warship/shared run build",
+    "start": "pnpm --filter @warship/server start",
+    "lint": "pnpm --silent run build:shared && eslint .",
+    "lint:fix": "pnpm --silent run build:shared && eslint . --fix",
+    "format": "prettier --write .",
+    "format:check": "prettier --check .",
+    "typecheck": "pnpm --silent run build:shared && pnpm -r typecheck",
+    "assets:generate": "pnpm --filter @warship/client run assets:generate",
+    "clean": "rimraf \"packages/*/dist\" \"packages/*/*.tsbuildinfo\"",
+    "test": "pnpm --silent run build:shared && pnpm -r --if-present test"
+  },
+  "devDependencies": {
+    "@eslint/js": "9.39.5",
+    "@types/node": "22.20.5",
+    "concurrently": "10.0.7",
+    "eslint": "9.39.5",
+    "eslint-config-prettier": "10.1.8",
+    "globals": "17.14.0",
+    "prettier": "3.10.1",
+    "rimraf": "6.1.2",
+    "typescript": "5.9.3",
+    "typescript-eslint": "8.72.2"
+  }
+}
