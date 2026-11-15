@@ -151,6 +151,18 @@ export const GRID_ROWS = WORLD_HEIGHT / GRID_SIZE; // 4
  */
 export const AOI_INTEREST_RADIUS = 3_000 as const;
 
+/**
+ * How much faster a hull may rotate when steered by mouse aim than by keyboard.
+ *
+ * Mouse aim is absolute ("face this way") while `turn` is relative ("rotate this
+ * fast"), so adopting a heading directly would let a flick of the cursor spin a
+ * battleship on the spot. This multiplier caps the assist at a few times the hull's
+ * own turn rate: responsive, but never instant. 1.0 would make the mouse feel as
+ * slow as the keyboard and defeat the point; 2.5 lands in one or two ticks for a
+ * normal flick.
+ */
+export const AIM_ASSIST_FACTOR = 2.5 as const;
+
 /** Where every new player is spawned: a ring inside the safe zone. */
 export const SPAWN_CENTER_X = WORLD_WIDTH / 2;
 export const SPAWN_CENTER_Y = WORLD_HEIGHT / 2;
@@ -427,6 +439,34 @@ export const RENDER_WATER_SCROLL_X = 6 as const;
 export const RENDER_WATER_SCROLL_Y = 3 as const;
 /** Blink period of the "you are here" ring under the local player's ship. */
 export const RENDER_SELF_RING_PULSE_MS = 1_400 as const;
+
+/**
+ * Whether to log every key press the input controller resolves.
+ *
+ * Enabled by `?debug=keys` in the URL or `localStorage.warshipDebugKeys = '1'`.
+ * This exists because "my keys do nothing" cannot be diagnosed from a screenshot:
+ * either the events never arrive, or they arrive and map to nothing — and only the
+ * console can tell those two apart.
+ *
+ * A function rather than a constant because it reads `location`/`localStorage`, and
+ * a module-level read would (a) execute under Node during tests and (b) freeze the
+ * answer before the user can flip the flag.
+ */
+export function inputDebugEnabled(): boolean {
+  if (typeof globalThis === 'undefined') return false;
+
+  const location = (globalThis as { location?: { search?: unknown } }).location;
+  if (typeof location?.search === 'string' && location.search.includes('debug=keys')) return true;
+
+  try {
+    // `localStorage` is absent under Node, and throws in sandboxed iframes.
+    const storage = (globalThis as { localStorage?: Storage }).localStorage;
+    return storage?.getItem('warshipDebugKeys') === '1';
+  } catch {
+    // localStorage throws in sandboxed iframes; a debug flag is not worth a crash.
+    return false;
+  }
+}
 
 /* -------------------------------------------------------------------------- */
 /*  Physics / gameplay                                                        */

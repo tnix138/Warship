@@ -155,7 +155,7 @@ strictly less than the population).
 | `server/src/game/AoI.test.ts`                   | 15    | cell maths, 5×5 coverage for a 3000 radius, torus seam, circle-not-square, boundary inclusion, removal reported once, 20-player culling, stable ordering |
 | `server/src/net/server.test.ts` (new describes) | 3     | two clients apart see nothing of each other, two close clients see each other, a departing ship is removed                                               |
 
-Total: **102 tests** (61 shared + 10 client + 31 server).
+Total: **115 tests** (61 shared + 21 client + 33 server) after the input fixes.
 
 ---
 
@@ -186,7 +186,80 @@ Total: **102 tests** (61 shared + 10 client + 31 server).
 
 ---
 
-## 6. Known limitations
+## 6. Input fixes (post-release regression report)
+
+A tester running the game in Codespaces reported: multiplayer, rendering, HUD,
+snapshots, delta and interpolation all worked — but **WASD did nothing, the ship was
+completely still**, and mouse aim and wheel zoom appeared dead too.
+
+Three separate defects, all on the client, all invisible to the server-side tests:
+
+### 6.1 WASD dead on non-QWERTY keyboards (`Input.ts`)
+
+Keys were read from `event.key`, which reports **the character the key produces**:
+
+| Layout         | Physical W key reports | Result                       |
+| -------------- | ---------------------- | ---------------------------- |
+| QWERTY (US/UK) | `"w"`                  | worked                       |
+| AZERTY (FR/BE) | `"z"`                  | **dead**                     |
+| QWERTZ (DE)    | `"w"`                  | worked (but `y`/`z` swapped) |
+| Dvorak         | `","`                  | **dead**                     |
+
+`event.key` also returns `"W"` when Shift is held, which `.toLowerCase()` papered
+over — but the layout problem could not be fixed that way. The controller now reads
+**`event.code`** (`"KeyW"`), which identifies the _physical_ key and is layout
+independent, keeping `event.key` only as a fallback for synthetic events with no
+`code`.
+
+`Input.test.ts` reproduces this exactly: dispatching a key event with
+`{ key: 'z', code: 'KeyW' }` must still throttle forward. That test failed before
+the fix and passes after.
+
+### 6.2 Wheel zoom and mouse aim were never connected (`Game.ts`, `camera.ts`)
+
+`Camera.attachInput()` existed but **was never called** — so neither drag-to-pan nor
+wheel-zoom was wired. Worse, drag-to-pan is wrong for this game: the camera _follows
+the ship_, so every drag is undone on the next tick and reads as "the mouse is
+broken". Added `Camera.attachZoom()` (wheel only, `{ passive: false }` so
+`preventDefault` actually stops the page/iframe scrolling) and wired it in `Game.ts`
+with proper teardown.
+
+### 6.3 `aim` was sent but never applied (`Loop.ts`)
+
+The client sent a world-space aim angle every input; the server parsed, clamped and
+stored it — then **never used it**. Mouse aiming could not have worked. It is now
+authoritative: the hull turns toward the aim angle, limited to
+`turnRate × AIM_ASSIST_FACTOR (2.5) × dt` per tick so a cursor flick cannot pivot a
+battleship instantly. `aim: null` still leaves the heading to `turn`, so WASD
+steering is unaffected.
+
+Verified live: holding W with `aim = -π/2` reaches rotation `-1.571` (error 0.000)
+and moves the ship 346 units.
+
+### 6.4 Making it diagnosable next time
+
+- HUD debug panel gained **`input`** (the intent currently being sent: `thr +1`,
+  `turn -1`, `fire`) and **`sent`** (INPUT frames sent). `sent` climbing with
+  `input –` while pressing W means the listener never fired; `input` showing values
+  means the client is fine and the fault is server-side.
+- `?debug=keys` in the URL (or `localStorage.warshipDebugKeys = '1'`) logs every
+  resolved key to the console.
+- The canvas is now focusable (`tabIndex`) and takes focus on pointer down.
+
+### 6.5 Test coverage that would have caught all three
+
+| Test                                                    | Guards against                                                            |
+| ------------------------------------------------------- | ------------------------------------------------------------------------- |
+| `client/src/game/Input.test.ts` — 11 tests              | keys never firing, wrong mapping, layout dependence, blur, focus stealing |
+| `server/.../server.test.ts` — _aim turns the hull_      | aim parsed but ignored                                                    |
+| `server/.../server.test.ts` — _aim: null uses keyboard_ | aim override breaking WASD                                                |
+
+The aim test was verified to **fail** with the fix reverted, so it is a real
+regression test rather than a test written to match the code.
+
+---
+
+## 7. Known limitations
 
 - **No HTTP-level compression.** MessagePack is already compact; gzip on a 300-byte
   delta frame mostly adds CPU.

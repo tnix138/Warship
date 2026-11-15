@@ -49,6 +49,8 @@ export class GameHud {
   readonly #buffered = document.getElementById('stat-buffered');
   readonly #pending = document.getElementById('stat-pending');
   readonly #corrections = document.getElementById('stat-corrections');
+  readonly #input = document.getElementById('stat-input');
+  readonly #sent = document.getElementById('stat-sent');
 
   readonly #netDot = document.getElementById('net-dot');
   readonly #netLabel = document.getElementById('net-label');
@@ -116,6 +118,25 @@ export class GameHud {
   /** Interpolation buffer depth, refreshed with the debug panel's 4 Hz cadence. */
   setBufferDepth(frames: number): void {
     setText(this.#buffered, String(frames));
+  }
+
+  /**
+   * Show the intent currently being sent, and how many INPUT frames have gone out.
+   *
+   * This is the fastest way to tell "keys are not arriving" apart from "keys arrive
+   * but the server ignores them": `sent` climbing with `input` showing `thr 1` means
+   * the client is fine; `input –` while pressing W means the listener never fired.
+   */
+  setInputState(frame: { turn: number; throttle: number; firing: boolean }, sent: number): void {
+    const parts: string[] = [];
+    if (frame.throttle > 0) parts.push('thr +1');
+    else if (frame.throttle < 0) parts.push('thr -1');
+    if (frame.turn > 0) parts.push('turn +1');
+    else if (frame.turn < 0) parts.push('turn -1');
+    if (frame.firing) parts.push('fire');
+
+    setText(this.#input, parts.length === 0 ? '–' : parts.join(' '));
+    setText(this.#sent, String(sent));
   }
 
   /** Prediction health: unacknowledged inputs, corrections and worst error. */

@@ -421,6 +421,60 @@ describe('input drives the authoritative simulation', { concurrency: 1 }, () => 
     client.close();
   });
 
+  test('a mouse aim angle turns the hull toward the cursor', async () => {
+    const { client, playerState } = await join(port);
+
+    const before = await entityAfter(client, -1, playerState.entityId);
+
+    /* Aim at +y (π/2) while demanding no keyboard turn. Before aim was applied
+       server-side this was silently discarded and the hull never moved, which is
+       why mouse aiming looked broken in the browser. */
+    for (let seq = 1; seq <= 20; seq += 1) {
+      client.send(inputFrame(seq, 1, { turn: 0, throttle: 0, aim: Math.PI / 2 }));
+      await new Promise((resolve) => setTimeout(resolve, TICK_DURATION_MS));
+    }
+
+    const after = await entityAfter(client, before.tick, playerState.entityId);
+
+    // The hull must be facing +y, within one tick's aim budget of π/2.
+    const difference = Math.abs(
+      Math.atan2(
+        Math.sin(after.entity.rotation - Math.PI / 2),
+        Math.cos(after.entity.rotation - Math.PI / 2),
+      ),
+    );
+    assert.ok(
+      difference < 0.3,
+      `hull should have turned toward the aim angle; off by ${difference.toFixed(3)} rad`,
+    );
+
+    client.close();
+  });
+
+  test('aim: null leaves the heading to the keyboard', async () => {
+    const { client, playerState } = await join(port);
+
+    const before = await entityAfter(client, -1, playerState.entityId);
+
+    // No aim, full right turn: the hull must rotate by roughly turnRate * elapsed.
+    for (let seq = 1; seq <= 10; seq += 1) {
+      client.send(inputFrame(seq, 1, { turn: 1, throttle: 0, aim: null }));
+      await new Promise((resolve) => setTimeout(resolve, TICK_DURATION_MS));
+    }
+
+    const after = await entityAfter(client, before.tick, playerState.entityId);
+    const turned = Math.abs(
+      Math.atan2(
+        Math.sin(after.entity.rotation - before.entity.rotation),
+        Math.cos(after.entity.rotation - before.entity.rotation),
+      ),
+    );
+
+    assert.ok(turned > 0.3, `holding D must rotate the hull; turned ${turned.toFixed(3)} rad`);
+
+    client.close();
+  });
+
   test('the server ignores a replayed (stale) INPUT sequence number', async () => {
     const { client, playerState } = await join(port);
 

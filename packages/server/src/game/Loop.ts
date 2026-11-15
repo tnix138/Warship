@@ -2,6 +2,7 @@ import {
   INPUT_STALE_AFTER_MS,
   MessageType,
   PLAYER_STATE_INTERVAL_TICKS,
+  AIM_ASSIST_FACTOR,
   SNAPSHOT_KEYFRAME_INTERVAL_TICKS,
   PROTOCOL_VERSION,
   SNAPSHOT_COORDINATE_DECIMALS,
@@ -19,7 +20,23 @@ import {
   type UpgradeId,
 } from '@warship/shared';
 
+import { angleDelta, normalizeAngle } from '@warship/shared';
+
 import type { Logger } from '../logger.js';
+
+/**
+ * Rotate `current` toward `target` by at most `maxStep` radians.
+ *
+ * Aim arrives as an absolute angle, but a ship cannot pivot instantly, so the
+ * server walks toward it instead of assigning it. `angleDelta` gives the signed
+ * shortest arc, which is what keeps a turn through ±π from going the long way
+ * round.
+ */
+function approachAngle(current: number, target: number, maxStep: number): number {
+  const delta = angleDelta(current, target);
+  if (Math.abs(delta) <= maxStep) return normalizeAngle(target);
+  return normalizeAngle(current + Math.sign(delta) * maxStep);
+}
 import { createAoiState, isUnchanged, updateAoi, type AoiState } from './AoI.js';
 import type { Player } from './Player.js';
 import type { World } from './World.js';
@@ -98,9 +115,18 @@ export class Loop {
       const intent = this.#effectiveIntent(player, now);
       const stats = computeShipStats(player.shipClass, player.upgrades);
 
+      /* Mouse aim beats keyboard turn: if the client sent an absolute heading,
+         adopt it (limited to what the hull could physically rotate this tick, so a
+         teleporting cursor cannot spin the ship instantly). `null` means "no mouse",
+         in which case `turn` steers. */
+      const heading =
+        intent.aim === null
+          ? player.rotation
+          : approachAngle(player.rotation, intent.aim, stats.turnRate * AIM_ASSIST_FACTOR * dt);
+
       const next = stepMotion(
-        { x: player.x, y: player.y, rotation: player.rotation, speed: player.speed },
-        { turn: intent.turn, throttle: intent.throttle },
+        { x: player.x, y: player.y, rotation: heading, speed: player.speed },
+        { turn: intent.aim === null ? intent.turn : 0, throttle: intent.throttle },
         { speed: stats.maxSpeed, turnRate: stats.turnRate },
         dt,
       );

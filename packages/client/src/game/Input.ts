@@ -1,4 +1,4 @@
-import type { InputFrame } from '@warship/shared';
+import { inputDebugEnabled, type InputFrame } from '@warship/shared';
 
 /**
  * Keyboard + mouse input.
@@ -7,19 +7,89 @@ import type { InputFrame } from '@warship/shared';
  * happens to the ship. W/A/S/D (and arrow keys) steer, the pointer sets the aim
  * angle, the mouse button holds the trigger.
  *
- * The pointer aim is resolved in world space by the caller, which passes the world
- * position under the cursor; this class stays camera-agnostic.
+ * ## Why keys are read from `event.code`, not `event.key`
+ *
+ * `event.key` reports the **character the key produces**, which depends on the
+ * keyboard layout: on AZERTY the physical W key yields `"z"`, on QWERTZ `"w"` and
+ * `"z"` are swapped, and on Dvorak `"w"` sits where QWERTY has `","`. Reading
+ * `event.key` therefore makes WASD dead for every non-QWERTY user, and it also
+ * breaks when Shift is held (`"W"`). `event.code` reports the **physical key**
+ * (`"KeyW"`), which is exactly what a game wants: the key in the same place,
+ * whatever it types. `event.key` is kept as a fallback for the rare synthetic
+ * events that carry no `code`.
+ *
+ * ## Focus
+ *
+ * Listeners live on `window`, so no element needs focus for keys to arrive. The
+ * canvas is still made focusable (`tabIndex`) and focuses itself on click/pointer
+ * down, so that the page receives keystrokes at all when embedded in an iframe or
+ * after the user clicks browser chrome. Holding Cmd/Ctrl/Alt suppresses movement so
+ * browser shortcuts keep working.
  */
+
+/** Physical-key codes mapped to the actions they drive. */
+const KEY_ACTIONS = {
+  forward: ['KeyW', 'ArrowUp'],
+  backward: ['KeyS', 'ArrowDown'],
+  left: ['KeyA', 'ArrowLeft'],
+  right: ['KeyD', 'ArrowRight'],
+} as const satisfies Record<string, readonly string[]>;
+
+type Action = keyof typeof KEY_ACTIONS;
+
+/** Fallback for events without a `code`: the character form of each action key. */
+const KEY_FALLBACKS: Readonly<Record<Action, readonly string[]>> = {
+  forward: ['w'],
+  backward: ['s'],
+  left: ['a'],
+  right: ['d'],
+};
+
+/** True when a `KeyboardEvent` should modify movement (browser shortcut). */
+function isShortcutModifier(event: {
+  ctrlKey: boolean;
+  metaKey: boolean;
+  altKey: boolean;
+}): boolean {
+  return event.ctrlKey || event.metaKey || event.altKey;
+}
+
+/** Resolve which action a key event maps to, or `null`. */
+function actionOf(event: { code?: string; key?: string }): Action | null {
+  const code = event.code ?? '';
+  const key = (event.key ?? '').toLowerCase();
+
+  for (const [action, codes] of Object.entries(KEY_ACTIONS) as [Action, readonly string[]][]) {
+    if (codes.includes(code)) return action;
+    // Only consult `key` when the event has no `code` at all, so a real layout
+    // never overrides the physical mapping.
+    if (code === '' && KEY_FALLBACKS[action].includes(key)) return action;
+  }
+  return null;
+}
 export class InputController {
-  readonly #keys = new Set<string>();
   readonly #canvas: HTMLElement;
 
   /** Screen-space pointer, kept for the caller to project into world space. */
   readonly pointer = { x: 0, y: 0, inside: false };
   #firing = false;
 
+  /** Held actions, so a key repeat cannot double-count. */
+  readonly #actions = new Set<Action>();
+
+  /** Set by the diagnostics flag: logs every key the controller resolves. */
+  readonly #debug = inputDebugEnabled();
+
   constructor(canvas: HTMLElement) {
     this.#canvas = canvas;
+
+    /* The canvas never needs to be focused for window listeners to fire, but making
+       it focusable means a click puts the page in a state where keystrokes are
+       delivered — required inside an iframe, and after the user clicks browser
+       chrome. It also stops the browser from treating Space as "scroll". */
+    if (canvas instanceof HTMLElement && !canvas.hasAttribute('tabindex')) {
+      canvas.tabIndex = 0;
+    }
 
     window.addEventListener('keydown', this.#onKeyDown);
     window.addEventListener('keyup', this.#onKeyUp);
@@ -66,15 +136,15 @@ export class InputController {
   /* ------------------------------------------------------------------------ */
 
   #turn(): number {
-    const left = this.#keys.has('a') || this.#keys.has('arrowleft');
-    const right = this.#keys.has('d') || this.#keys.has('arrowright');
-    // In this world frame, positive rotation is clockwise, so "right" is +1.
+    // Positive rotation is clockwise in this world frame, so "right" is +1.
+    const right = this.#actions.has('right');
+    const left = this.#actions.has('left');
     return (right ? 1 : 0) - (left ? 1 : 0);
   }
 
   #throttle(): number {
-    const forward = this.#keys.has('w') || this.#keys.has('arrowup');
-    const backward = this.#keys.has('s') || this.#keys.has('arrowdown');
+    const forward = this.#actions.has('forward');
+    const backward = this.#actions.has('backward');
     return (forward ? 1 : 0) - (backward ? 1 : 0);
   }
 
@@ -84,21 +154,39 @@ export class InputController {
     if (target instanceof HTMLElement && (target.isContentEditable || target.tagName === 'INPUT')) {
       return;
     }
-    this.#keys.add(event.key.toLowerCase());
 
-    if (event.key === ' ' || event.key === 'Spacebar') {
+    // Leave browser shortcuts alone (Cmd+R, Ctrl+C, …).
+    if (isShortcutModifier(event)) return;
+
+    const action = actionOf(event);
+    if (action !== null) {
+      this.#actions.add(action);
+      if (this.#debug) {
+        console.info('[INPUT] keydown', { code: event.code, key: event.key, action });
+      }
+    }
+
+    if (event.code === 'Space' || event.key === ' ') {
+      // Space would otherwise scroll the page — and the game has no page to scroll.
       event.preventDefault();
       this.#firing = true;
     }
   };
 
   #onKeyUp = (event: KeyboardEvent): void => {
-    this.#keys.delete(event.key.toLowerCase());
-    if (event.key === ' ' || event.key === 'Spacebar') this.#firing = false;
+    const action = actionOf(event);
+    if (action !== null) {
+      this.#actions.delete(action);
+      if (this.#debug) {
+        console.info('[INPUT] keyup', { code: event.code, key: event.key, action });
+      }
+    }
+
+    if (event.code === 'Space' || event.key === ' ') this.#firing = false;
   };
 
   #onBlur = (): void => {
-    this.#keys.clear();
+    this.#actions.clear();
     this.#firing = false;
   };
 
@@ -110,6 +198,9 @@ export class InputController {
   };
 
   #onPointerDown = (event: PointerEvent): void => {
+    // A click is the user's most explicit "I am playing now" signal: take focus so
+    // nothing else on the page can intercept keystrokes.
+    this.#canvas.focus();
     if (event.button === 0) this.#firing = true;
   };
 

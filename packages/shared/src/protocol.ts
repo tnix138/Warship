@@ -93,7 +93,15 @@ export interface InputFrame {
   readonly turn: number;
   /** -1 = full reverse, 0 = idle, +1 = full ahead. */
   readonly throttle: number;
-  /** World-space aim angle in radians; `null` keeps the previous aim. */
+  /**
+   * World-space aim angle in radians, or `null` to leave the hull heading alone.
+   *
+   * This is **authoritative**: when present, the server turns the hull toward this
+   * angle immediately (up to a generous anti-snap limit), rather than only using it
+   * for a future turret. That makes the mouse the steering device it looks like in
+   * the UI, and it keeps `turn` as the keyboard alternative rather than a
+   * contradictory second source of truth.
+   */
   readonly aim: Radians | null;
   /** Whether the trigger is held this tick. The server decides if a shot is legal. */
   readonly firing: boolean;

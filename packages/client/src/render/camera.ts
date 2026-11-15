@@ -117,6 +117,34 @@ export class Camera {
     this.#apply();
   }
 
+  /**
+   * Wire wheel-to-zoom only. Returns a disposer.
+   *
+   * Separate from `attachInput` because in-game the camera *follows the ship*: if
+   * drag-to-pan were also attached, every drag would be undone by the next follow
+   * tick, which reads as "the mouse is broken". Zoom is the one camera control that
+   * composes with a following camera.
+   *
+   * `{ passive: false }` is required: the listener calls `preventDefault` to stop
+   * the page (or the Codespaces iframe) from scrolling behind the canvas. Without
+   * the flag, the browser ignores `preventDefault` and the wheel both zooms and
+   * scrolls.
+   */
+  attachZoom(canvas: HTMLCanvasElement): () => void {
+    const onWheel = (event: WheelEvent): void => {
+      event.preventDefault();
+      const rect = canvas.getBoundingClientRect();
+      const factor = Math.exp(-event.deltaY * 0.0012);
+      this.zoomAt(factor, event.clientX - rect.left, event.clientY - rect.top);
+    };
+
+    canvas.addEventListener('wheel', onWheel, { passive: false });
+
+    return () => {
+      canvas.removeEventListener('wheel', onWheel);
+    };
+  }
+
   /** Wire pointer input on the canvas. Returns a disposer. */
   attachInput(canvas: HTMLCanvasElement): () => void {
     const onPointerDown = (event: PointerEvent): void => {

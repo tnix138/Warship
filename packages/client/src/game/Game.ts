@@ -74,6 +74,10 @@ export async function createGame(options: GameOptions): Promise<Game> {
 
   const input = new InputController(options.canvas);
 
+  /* Camera controls. Wheel zoom is the only one that composes with a following
+     camera; see `Camera.attachZoom`. */
+  const detachZoom = camera.attachZoom(options.canvas);
+
   let joined = false;
   let sequence = 0;
   let inputAccumulator = 0;
@@ -168,6 +172,7 @@ export async function createGame(options: GameOptions): Promise<Game> {
       // reacts on this frame rather than one round-trip later.
       prediction.applyInput(sequence, frame, now);
       connection.sendInput(sequence, world.tick, frame);
+      hud.setInputState(frame, sequence);
     }
 
     /* Camera: follow the *predicted* ship, which is where the player believes they
@@ -211,6 +216,7 @@ export async function createGame(options: GameOptions): Promise<Game> {
   return {
     destroy(): void {
       connection.disconnect();
+      detachZoom();
       input.destroy();
       entities.destroy();
       hud.destroy();
