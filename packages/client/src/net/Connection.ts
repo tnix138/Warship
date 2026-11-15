@@ -2,6 +2,7 @@ import { decode, encode } from '@msgpack/msgpack';
 
 import {
   CLIENT_INPUT_RATE,
+  CloseCode,
   MessageType,
   PROTOCOL_VERSION,
   WS_SUBPROTOCOL,
@@ -65,6 +66,19 @@ export class Connection {
 
   /** Latest WELCOME, available once the socket is open. */
   welcome: WelcomeMessage | null = null;
+
+  /**
+   * Set when the server closed the connection for a reason retrying cannot fix.
+   *
+   * The HUD shows this verbatim, because the alternative — silently retrying — is
+   * how "the game is stuck on reconnecting" becomes a support ticket.
+   */
+  #fatalReason: string | null = null;
+
+  /** Why the connection gave up, or `null` while it is still trying. */
+  get fatalReason(): string | null {
+    return this.#fatalReason;
+  }
   /** Latest private state for the local player. */
   playerState: PlayerStateMessage | null = null;
   /** Most recent snapshot, for renderers that poll instead of subscribing. */
@@ -84,6 +98,7 @@ export class Connection {
   connect(): void {
     if (this.#socket !== null) return;
     this.#closedByUser = false;
+    this.#fatalReason = null;
     this.#setState('connecting');
 
     const socket = new WebSocket(this.#url, [WS_SUBPROTOCOL]);
@@ -112,6 +127,23 @@ export class Connection {
       }
 
       const reason = event.reason.length > 0 ? `: ${event.reason}` : '';
+
+      /* Some close codes mean "retrying will never help".
+       *
+       * A protocol mismatch is the important one: it is exactly what happens when
+       * the browser reloads onto a new build (HMR, a `git pull`) while an older
+       * server process is still running. Retrying produces an endless
+       * connect → 4001 → reconnect loop, and the HUD just flickers
+       * "reconnecting…", so the real cause (restart the server) is invisible. */
+      if (isFatalCloseCode(event.code)) {
+        this.#fatalReason = describeFatalClose(event.code);
+        this.#listeners.onError?.(
+          new Error(`${this.#fatalReason} (${event.code.toString()})${reason}`),
+        );
+        this.#setState('disconnected');
+        return;
+      }
+
       this.#listeners.onError?.(new Error(`connection closed (${event.code.toString()})${reason}`));
 
       if (this.#reconnectDelayMs > 0) {
@@ -233,6 +265,41 @@ export class Connection {
     if (this.#state === state) return;
     this.#state = state;
     this.#listeners.onStateChange?.(state);
+  }
+}
+
+/**
+ * Close codes where reconnecting cannot possibly succeed.
+ *
+ * Retrying a version mismatch just loops: the server will reject every attempt until
+ * it is restarted or the client is rolled back.
+ */
+function isFatalCloseCode(code: number): boolean {
+  return (
+    code === CloseCode.VersionMismatch ||
+    code === CloseCode.ServerFull ||
+    code === CloseCode.NotJoined
+  );
+}
+
+/** Player-facing explanation for a fatal close, including the fix. */
+function describeFatalClose(code: number): string {
+  switch (code) {
+    case CloseCode.VersionMismatch: {
+      return (
+        'server and client speak different protocol versions — ' +
+        'the server is running older code than the page. Restart it: pkill -f "tsx watch"; pnpm dev'
+      );
+    }
+    case CloseCode.ServerFull: {
+      return 'the server is full';
+    }
+    case CloseCode.NotJoined: {
+      return 'the server rejected the session as not joined';
+    }
+    default: {
+      return 'the server closed the connection';
+    }
   }
 }
 

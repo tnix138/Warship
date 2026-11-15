@@ -68,6 +68,8 @@ pnpm dev:client        # shared build + client only
 | Script                 | Effect                                                            |
 | ---------------------- | ----------------------------------------------------------------- |
 | `pnpm dev`             | Run all three packages (shared in watch mode)                     |
+| `pnpm kill`            | Stop every dev process (`tsx watch`, `vite`, `concurrently`)      |
+| `pnpm restart`         | `pnpm kill` then `pnpm dev` — the fix for a stale server          |
 | `pnpm build`           | Build `shared`, then `server` and `client`                        |
 | `pnpm start`           | Run the compiled server (`packages/server/dist/index.js`)         |
 | `pnpm lint`            | ESLint, type-aware, whole repo                                    |
@@ -93,7 +95,7 @@ All optional; the defaults just work.
 | `WARSHIP_SERVER_HOST` | `127.0.0.1`           | client  |
 | `WARSHIP_SERVER_PORT` | `8080`                | client  |
 
-## Protocol (v2)
+## Protocol (v3)
 
 Binary MessagePack frames, one message per WebSocket frame, on `/ws`, negotiated
 with the `warship` subprotocol. Defined in
@@ -150,6 +152,11 @@ top-down hull sprites. **They are generated placeholders**, produced by
 `packages/client/scripts/generate-assets.mjs` (zero dependencies, deterministic
 PNG output). Replace the files with any licensed tileable water texture and
 top-down ship art of the same names; no code changes are required.
+
+## Testing
+
+See [`docs/HOW-TO-TEST.md`](docs/HOW-TO-TEST.md) for the manual checklist, the
+symptom→cause table, and the reset that fixes a stale server after a `git pull`.
 
 ## Notes for the next milestones
 

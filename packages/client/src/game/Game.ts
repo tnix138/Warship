@@ -88,6 +88,12 @@ export async function createGame(options: GameOptions): Promise<Game> {
     listeners: {
       onStateChange: (state) => {
         hud.setConnectionState(state);
+
+        /* A fatal close (protocol mismatch, server full) must be shown verbatim:
+           the ship controls silently stop working otherwise, which looks exactly
+           like the input bug we just fixed. */
+        const fatal = connection.fatalReason;
+        if (fatal !== null) hud.setConnectionError(fatal);
       },
       onWelcome: (welcome) => {
         hud.setServerInfo(welcome);

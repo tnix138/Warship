@@ -82,6 +82,20 @@ export class GameHud {
     if (this.#netDot) this.#netDot.className = dotClass;
   }
 
+  /**
+   * Show a fatal connection error prominently.
+   *
+   * Rendered in the status area *and* as a persistent event line, because the
+   * top-right status text is small and easy to miss while the player is busy
+   * pressing keys that appear to do nothing.
+   */
+  setConnectionError(message: string): void {
+    this.#setNetLabel('error — see console');
+    if (this.#netDot) this.#netDot.className = 'dot dot--error';
+    this.pushEvent(message);
+    console.error('[net]', message);
+  }
+
   /** Show the shard, tick rate and world size once the handshake completes. */
   setServerInfo(welcome: WelcomeMessage): void {
     this.#setNetLabel(`${welcome.shardId} · ${String(welcome.tickRate)} Hz`);

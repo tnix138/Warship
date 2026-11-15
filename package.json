@@ -24,7 +24,9 @@
     "typecheck": "pnpm --silent run build:shared && pnpm -r typecheck",
     "assets:generate": "pnpm --filter @warship/client run assets:generate",
     "clean": "rimraf \"packages/*/dist\" \"packages/*/*.tsbuildinfo\"",
-    "test": "pnpm --silent run build:shared && pnpm -r --if-present test"
+    "test": "pnpm --silent run build:shared && pnpm -r --if-present test",
+    "kill": "pkill -f \"tsx watch\" || true; pkill -f vite || true; pkill -f concurrently || true; echo \"dev processes stopped\"",
+    "restart": "pnpm kill && sleep 1 && pnpm dev"
   },
   "devDependencies": {
     "@eslint/js": "9.39.5",
