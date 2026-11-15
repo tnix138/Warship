@@ -58,6 +58,36 @@ export class Interpolation {
   /** Render this far behind the newest data, in milliseconds. */
   readonly delayMs: number;
 
+  /**
+   * The render clock, in local milliseconds.
+   *
+   * This is the entire difference between smooth and jittery remote motion. The
+   * obvious implementation — `renderTime = now - delay` — inherits every hiccup in
+   * packet arrival: a snapshot that is 20 ms late makes the world lurch forward, and
+   * one that arrives early makes it stand still. Because snapshots are sampled, the
+   * result is a visibly uneven crawl.
+   *
+   * Instead the render clock advances at exactly real time and is *nudged* toward the
+   * target (`now - delay`) rather than assigned to it. Arrival jitter changes how fast
+   * it converges, never the frame-to-frame motion.
+   */
+  #renderClockMs = 0;
+
+  /**
+   * Offset from the server clock to the render clock, in milliseconds.
+   *
+   * Snapshots are timestamped by the server; the renderer runs on local time. A fixed
+   * offset lets us convert the render clock into *server* time, which is smooth,
+   * instead of using arrival times, which are not. Estimated once and then held: it
+   * only needs to absorb the difference between two machine clocks, which does not
+   * drift meaningfully over a session.
+   */
+  #serverOffsetMs = 0;
+  #serverOffsetReady = false;
+  /** Local timestamp of the previous sample, for the real-time advance. */
+  #lastNow = 0;
+  #renderClockReady = false;
+
   /** How long a removed entity lingers while fading, in milliseconds. */
   readonly fadeMs: number;
 
@@ -125,6 +155,22 @@ export class Interpolation {
       entities: merged,
     });
 
+    /* Learn the server→local offset. Each frame gives one sample, but a sample taken
+       from a late packet is biased, so take the *minimum* offset seen recently: the
+       fastest-delivering frame is the least delayed and therefore the closest to
+       truth. This is the standard one-way-delay trick and it is stable without any
+       clock-sync exchange. */
+    const sample = options.now - frame.serverTime;
+    if (!this.#serverOffsetReady) {
+      this.#serverOffsetMs = sample;
+      this.#serverOffsetReady = true;
+    } else if (sample < this.#serverOffsetMs) {
+      this.#serverOffsetMs = sample;
+    } else {
+      // Drift upward very slowly, so a genuinely faster network is re-learned.
+      this.#serverOffsetMs += (sample - this.#serverOffsetMs) * 0.002;
+    }
+
     while (this.#buffer.length > MAX_BUFFERED_FRAMES) this.#buffer.shift();
   }
 
@@ -132,6 +178,8 @@ export class Interpolation {
   clear(): void {
     this.#buffer.length = 0;
     this.#fading.clear();
+    this.#renderClockReady = false;
+    this.#serverOffsetReady = false;
   }
 
   /**
@@ -144,7 +192,7 @@ export class Interpolation {
   sample(now: number): readonly InterpolatedEntity[] {
     if (this.#buffer.length === 0) return [];
 
-    const renderTime = now - this.delayMs;
+    const renderTime = this.#advanceRenderClock(now);
 
     const to = this.#framePairFor(renderTime);
     if (to === null) {
@@ -205,6 +253,47 @@ export class Interpolation {
   /*  Internals                                                               */
   /* ------------------------------------------------------------------------ */
 
+  /**
+   * Advance the render clock by real elapsed time, converging on `now - delay`.
+   *
+   * The convergence rate is deliberately slow (a fraction of the remaining error per
+   * frame): the clock must never visibly jump, because a jump in the clock is a jump
+   * in every interpolated entity at once. It is only there to stop the clock drifting
+   * away from the buffer over minutes of play — for instance when the tab is
+   * backgrounded and `now` skips forward.
+   */
+  #advanceRenderClock(now: number): number {
+    const target = now - this.delayMs;
+
+    if (!this.#renderClockReady) {
+      // First sample: start where we want to be; there is no history to preserve.
+      this.#renderClockMs = target;
+      this.#lastNow = now;
+      this.#renderClockReady = true;
+      return this.#renderClockMs;
+    }
+
+    /* Advance by real elapsed time. This is the part that makes motion smooth: the
+       clock is tied to the wall clock, not to when packets happened to arrive. */
+    let elapsed = now - this.#lastNow;
+    if (!Number.isFinite(elapsed) || elapsed < 0) elapsed = 0;
+    // A backgrounded tab can produce a multi-second gap; cap it so the clock does not
+    // leap forward and teleport every entity.
+    if (elapsed > 250) elapsed = 250;
+    this.#lastNow = now;
+    this.#renderClockMs += elapsed;
+
+    /* Then nudge it back toward the target so it cannot drift away over minutes.
+       The nudge is a fraction of the remaining error, never the whole error: a jump
+       in the clock is a jump in every interpolated entity at once. */
+    const drift = target - this.#renderClockMs;
+    const maxStep = 3; // ms per frame — enough to recover 100 ms of drift in ~0.5 s
+    const correction = Math.max(-maxStep, Math.min(maxStep, drift)) * 0.35;
+    this.#renderClockMs += correction;
+
+    return this.#renderClockMs;
+  }
+
   #beginFade(entity: InterpolatedEntity, now: number): void {
     if (this.fadeMs <= 0) return;
     this.#fading.set(entity.id, { entity, until: now + this.fadeMs });
@@ -222,25 +311,58 @@ export class Interpolation {
   ): { from: SnapshotFrame; to: SnapshotFrame; alpha: number } | null {
     if (this.#buffer.length < 2) return null;
 
-    // Walk backwards to the newest frame received at or before renderTime.
-    for (let index = this.#buffer.length - 2; index >= 0; index -= 1) {
-      const from = this.#buffer[index];
-      const to = this.#buffer[index + 1];
-      if (from === undefined || to === undefined) continue;
+    /* Convert the render clock into server time. This single line is what makes remote
+       motion smooth.
 
-      if (from.receivedAt <= renderTime) {
-        const span = to.receivedAt - from.receivedAt;
-        const alpha = span <= 0 ? 1 : clamp01((renderTime - from.receivedAt) / span);
-        return { from, to, alpha };
+       Arrival times are the obvious time base and the wrong one: they carry every
+       network hiccup. A snapshot delivered 20 ms late would make the world slide
+       slowly for a moment, then hop to catch up. Server timestamps advance perfectly
+       evenly — one per tick — so blending on them is independent of how the packets
+       travelled.
+
+       The buffer is in arrival order, and `serverTime` increases with it, so a binary
+       search places the render moment between two frames by simulation time. */
+    const serverTime = renderTime - this.#serverOffsetMs;
+
+    let low = 0;
+    let high = this.#buffer.length - 1;
+
+    if (serverTime <= (this.#buffer[0]?.serverTime ?? 0)) {
+      // Predates the buffer: hold the oldest pose rather than extrapolate backwards.
+      const from = this.#buffer[0];
+      const to = this.#buffer[1];
+      if (from === undefined || to === undefined) return null;
+      return { from, to, alpha: 0 };
+    }
+    if (serverTime >= (this.#buffer[high]?.serverTime ?? 0)) {
+      /* Past the newest frame: hold the last pair at alpha 1 rather than extrapolate.
+         Extrapolation overshoots on every corner and then snaps back, which is a
+         worse artefact than a few milliseconds of held pose. */
+      const from = this.#buffer[high - 1];
+      const to = this.#buffer[high];
+      if (from === undefined || to === undefined) return null;
+      return { from, to, alpha: 1 };
+    }
+
+    while (high - low > 1) {
+      const mid = (low + high) >> 1;
+      const frame = this.#buffer[mid];
+      if (frame === undefined) break;
+      if (frame.serverTime <= serverTime) {
+        low = mid;
+      } else {
+        high = mid;
       }
     }
 
-    // renderTime predates the whole buffer: hold the oldest pose instead of
-    // extrapolating backwards, which would jitter.
-    const from = this.#buffer[0];
-    const to = this.#buffer[1];
+    const from = this.#buffer[low];
+    const to = this.#buffer[high];
     if (from === undefined || to === undefined) return null;
-    return { from, to, alpha: 0 };
+
+    const span = to.serverTime - from.serverTime;
+    const alpha = span <= 0 ? 1 : clamp01((serverTime - from.serverTime) / span);
+
+    return { from, to, alpha };
   }
 }
 

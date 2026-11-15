@@ -57,6 +57,17 @@ export class Camera {
     return this.#zoom;
   }
 
+  /** Visible region in world units, for viewport culling. */
+  get viewport(): { x: number; y: number; zoom: number; width: number; height: number } {
+    return {
+      x: this.#x,
+      y: this.#y,
+      zoom: this.#zoom,
+      width: this.#viewportWidth,
+      height: this.#viewportHeight,
+    };
+  }
+
   /** Call whenever the renderer resizes. */
   setViewport(width: number, height: number): void {
     this.#viewportWidth = width;

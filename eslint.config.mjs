@@ -35,6 +35,11 @@ export default tseslint.config(
         { prefer: 'type-imports', fixStyle: 'inline-type-imports' },
       ],
       '@typescript-eslint/consistent-type-definitions': ['error', 'interface'],
+      /* Numbers inside template literals are fine and idiomatic:
+         `${value.toFixed(1)} ms`. Requiring `String(...)` around them is noise, and the
+         rule's default behaviour is inconsistent (it allows numbers in some positions
+         and not others), which makes it easy to "fix" code that was already correct. */
+      '@typescript-eslint/restrict-template-expressions': ['error', { allowNumber: true }],
       '@typescript-eslint/explicit-module-boundary-types': 'off',
       '@typescript-eslint/no-unused-vars': [
         'error',

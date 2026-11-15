@@ -7,6 +7,7 @@ import {
   RENDER_MAX_DPR,
   ShipClass,
   type EventKind,
+  type InputFrame,
   type SnapshotMessage,
 } from '@warship/shared';
 
@@ -18,6 +19,7 @@ import { loadTextures } from '../render/assets';
 import { Camera } from '../render/camera';
 import { EntityRenderer } from '../render/EntityRenderer';
 import { Ocean } from '../render/ocean';
+import { WorldObjects } from '../render/WorldObjects';
 import { GameHud } from '../ui/GameHud';
 
 /**
@@ -68,6 +70,12 @@ export async function createGame(options: GameOptions): Promise<Game> {
   const ocean = new Ocean(textures.water, app.screen.width, app.screen.height);
 
   app.stage.addChild(ocean.view, camera.world);
+
+  /* Sea marks, wake and grid live in world space, beneath the ships. They are what
+     make movement legible: the tiling water is screen-space and identical everywhere,
+     so without fixed landmarks a moving ship looks stationary. */
+  const worldObjects = new WorldObjects();
+  camera.world.addChild(worldObjects.view);
 
   const entities = new EntityRenderer(textures);
   camera.world.addChild(entities.view);
@@ -130,6 +138,10 @@ export async function createGame(options: GameOptions): Promise<Game> {
             corrections: prediction.correctionCount,
             error: result.error,
             largest: prediction.largestCorrection,
+            recent: prediction.recentCorrections,
+            buffered: world.interpolation.bufferedFrames,
+            delayMs: world.interpolation.delayMs,
+            correcting: prediction.correcting,
           });
         }
 
@@ -169,17 +181,27 @@ export async function createGame(options: GameOptions): Promise<Game> {
     inputAccumulator += deltaS;
     if (inputAccumulator > inputIntervalS * 4) inputAccumulator = inputIntervalS * 4;
 
+    /* At most one INPUT frame per 50 ms, exactly as before — but the *prediction* is
+       no longer stepped here. It runs on its own fixed clock in `prediction.update`
+       below, once per rendered frame, so the local ship moves every frame instead of
+       jumping 20 times a second. */
+    let sampledFrame: InputFrame | null = null;
+    let sampledSeq = sequence;
+
     while (inputAccumulator >= inputIntervalS) {
       inputAccumulator -= inputIntervalS;
       sequence += 1;
-      const frame = input.snapshot(aimAt(input, camera, world));
+      sampledFrame = input.snapshot(aimAt(input, camera, world));
+      sampledSeq = sequence;
 
-      // Predict the same input locally *before* it goes on the wire, so the ship
-      // reacts on this frame rather than one round-trip later.
-      prediction.applyInput(sequence, frame, now);
-      connection.sendInput(sequence, world.tick, frame);
-      hud.setInputState(frame, sequence);
+      connection.sendInput(sequence, world.tick, sampledFrame);
+      hud.setInputState(sampledFrame, sequence);
     }
+
+    /* Prediction: advance on the server's 20 Hz tick, then blend across it so the
+       ship is drawn at the frame rate. Doing this per frame — rather than per input —
+       is what removes the 20 Hz stutter of the player's own ship. */
+    prediction.update(deltaS, sampledFrame, sampledSeq);
 
     /* Camera: follow the *predicted* ship, which is where the player believes they
        are; following the authoritative pose would lag one round-trip behind. */
@@ -196,10 +218,14 @@ export async function createGame(options: GameOptions): Promise<Game> {
       }
     }
 
+    /* World feel: draw only what is on screen. */
+    worldObjects.update(now, camera.viewport, prediction.ready ? prediction.actor : null);
+
     /* Draw: interpolated poses for everyone else, predicted pose for us. */
     const renderList = world.renderEntities(now, prediction.ready ? prediction.actor : undefined);
     entities.update(renderList, now);
-    ocean.update(deltaMS);
+    /* Feed the ship's speed so the surface streams past in proportion to travel. */
+    ocean.update(deltaMS, prediction.ready ? Math.abs(prediction.actor.speed) : 0);
     hud.updateDebug(
       {
         fps: app.ticker.FPS,
@@ -225,6 +251,7 @@ export async function createGame(options: GameOptions): Promise<Game> {
       detachZoom();
       input.destroy();
       entities.destroy();
+      worldObjects.destroy();
       hud.destroy();
       app.destroy(true, { children: true });
     },

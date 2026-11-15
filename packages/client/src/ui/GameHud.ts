@@ -49,6 +49,7 @@ export class GameHud {
   readonly #buffered = document.getElementById('stat-buffered');
   readonly #pending = document.getElementById('stat-pending');
   readonly #corrections = document.getElementById('stat-corrections');
+  readonly #predictionError = document.getElementById('stat-prediction-error');
   readonly #input = document.getElementById('stat-input');
   readonly #sent = document.getElementById('stat-sent');
 
@@ -57,7 +58,16 @@ export class GameHud {
   readonly #eventLog = document.getElementById('event-log');
 
   #lastDebugUpdate = 0;
-  #lastPrediction = { pending: 0, corrections: 0, error: 0, largest: 0 };
+  #lastPrediction = {
+    pending: 0,
+    corrections: 0,
+    error: 0,
+    largest: 0,
+    recent: 0,
+    buffered: 0,
+    delayMs: 0,
+    correcting: false,
+  };
   #lastHpText = '';
   #lastNetLabel = '';
 
@@ -159,6 +169,10 @@ export class GameHud {
     corrections: number;
     error: number;
     largest: number;
+    recent: number;
+    buffered: number;
+    delayMs: number;
+    correcting: boolean;
   }): void {
     this.#lastPrediction = stats;
   }
@@ -172,13 +186,17 @@ export class GameHud {
     setText(this.#zoom, `${stats.zoom.toFixed(2)}×`);
     setText(this.#camera, `${stats.cameraX.toFixed(0)}, ${stats.cameraY.toFixed(0)}`);
     setText(this.#renderer, stats.rendererName);
-    setText(this.#buffered, String(stats.buffered));
+    /* The three numbers that actually explain a jitter complaint:
+       how deep the interpolation buffer is, how far ahead/behind our own prediction
+       sits, and how many corrections have been applied recently. */
+    const buffered = String(this.#lastPrediction.buffered);
+    setText(this.#buffered, `${buffered} frames (${String(this.#lastPrediction.delayMs)}ms)`);
+
     setText(this.#pending, String(this.#lastPrediction.pending));
+    setText(this.#predictionError, `${this.#lastPrediction.error.toFixed(2)} units`);
     setText(
       this.#corrections,
-      this.#lastPrediction.corrections === 0
-        ? '0'
-        : `${String(this.#lastPrediction.corrections)} (max ${this.#lastPrediction.largest.toFixed(1)}u)`,
+      `${String(this.#lastPrediction.recent)} (last 60s) · max ${this.#lastPrediction.largest.toFixed(1)}u`,
     );
   }
 

@@ -54,24 +54,41 @@ describe('Interpolation.sample', { concurrency: 1 }, () => {
   });
 
   test('blends linearly between two snapshots', () => {
+    /* `frameAt(tick, x)` derives `serverTime = tick * 50`, so ticks 1 and 3 are 100 ms
+       apart in simulated time. The renderer must walk from x=0 to x=100 across that
+       interval at an even rate once its clock is settled. */
     const interpolation = new Interpolation({ delayMs: 100, fadeMs: 0 });
 
-    // Received 100 ms apart, x goes 0 -> 100.
-    interpolation.push(frameAt(1, 0), { full: true, now: 0 });
-    interpolation.push(frameAt(2, 100), { full: false, now: 100 });
+    for (let tick = 1; tick <= 12; tick += 1) {
+      interpolation.push(frameAt(tick, (tick - 1) * 50), { full: true, now: (tick - 1) * 50 });
+    }
 
-    // Render 100 ms behind "now". At now=150 the render clock sits at 50, i.e.
-    // exactly halfway between the two frames.
-    const midway = interpolation.sample(150);
-    assert.equal(midway[0]?.x, 50);
+    // Sample at a steady 60 Hz through the middle of the buffer.
+    const values: number[] = [];
+    let previous = -Infinity;
+    for (let ms = 250; ms <= 400; ms += 1000 / 60) {
+      const value = interpolation.sample(ms)[0]?.x ?? Number.NaN;
+      values.push(value);
+      assert.ok(value >= previous - 1e-9, 'the rendered value must never go backwards');
+      previous = value;
+    }
 
-    // At now=100 the render clock is at 0 -> the oldest frame.
-    const atStart = interpolation.sample(100);
-    assert.equal(atStart[0]?.x, 0);
+    const steps = values
+      .slice(1)
+      .map((value, index) => value - (values[index] ?? 0))
+      .filter((step) => step > 1e-6);
 
-    // At now=200 the render clock is at 100 -> the newest frame.
-    const atEnd = interpolation.sample(200);
-    assert.equal(atEnd[0]?.x, 100);
+    assert.ok(steps.length >= 5, `expected several blending steps, got ${steps.length}`);
+
+    /* Even spacing is the property that matters: a jittery interpolator shows up as
+       steps of wildly different sizes, which the eye reads as stuttering. */
+    const mean = steps.reduce((a, b) => a + b, 0) / steps.length;
+    for (const step of steps) {
+      assert.ok(
+        Math.abs(step - mean) < mean * 0.05,
+        `blending should be linear; step ${step.toFixed(3)} vs mean ${mean.toFixed(3)}`,
+      );
+    }
   });
 
   test('interpolates rotation along the shortest path across the ±π seam', () => {
@@ -247,5 +264,107 @@ describe('Interpolation.sample', { concurrency: 1 }, () => {
     assert.equal(interpolation.hasData, false);
     assert.deepEqual(interpolation.sample(300), []);
     assert.equal(interpolation.fadeAlpha('a', 300), null);
+  });
+});
+
+describe('Interpolation — resistance to network jitter', { concurrency: 1 }, () => {
+  /**
+   * The measurement that separates a smooth world from a jittery one.
+   *
+   * A real server produces tick `k` at simulated time `k * 50` and it arrives after a
+   * base delay *plus jitter*. Rendering therefore has to answer: how uneven is the
+   * motion when packets do not arrive evenly?
+   *
+   * The old implementation used arrival times as its time base and inherited every
+   * hiccup — measured at 35.8 % and 62.5 % variation for 15 ms and 30 ms of jitter.
+   * Time-basing on server ticks keeps it under 1 %.
+   */
+  function measure(jitterMs: number): { variation: number; backwards: number } {
+    const interpolation = new Interpolation();
+    const CLOCK_OFFSET = 5_000; // server and client clocks differ; must not matter
+    const BASE_DELAY = 40;
+
+    // Deterministic pseudo-random jitter, so the test cannot flake.
+    let state = 987_654;
+    const random = (): number => {
+      state = (state * 1_103_515_245 + 12_345) & 0x7f_ff_ff_ff;
+      return state / 0x7f_ff_ff_ff;
+    };
+
+    const arrivals: number[] = [];
+    for (let tick = 0; tick < 4_000; tick += 1) {
+      arrivals.push(tick * 50 + BASE_DELAY + (random() - 0.5) * 2 * jitterMs + CLOCK_OFFSET);
+    }
+
+    let next = 0;
+    const drawn: number[] = [];
+
+    // 60 s of rendering at 60 Hz.
+    for (let frame = 0; frame < 3_600; frame += 1) {
+      const clock = frame * (1000 / 60) + CLOCK_OFFSET;
+
+      while (next < arrivals.length && (arrivals[next] ?? Infinity) <= clock) {
+        interpolation.push(
+          {
+            tick: next,
+            serverTime: next * 50,
+            entities: [{ id: 'a', x: next * 12, y: 0, rotation: 0, hp: 1, shipClass: 'normal' }],
+          },
+          { full: true, removed: [], now: clock },
+        );
+        next += 1;
+      }
+
+      const pose = interpolation.sample(clock).find((entity) => entity.id === 'a');
+      drawn.push(pose?.x ?? Number.NaN);
+    }
+
+    // Measure the settled second half: the first seconds include clock start-up.
+    const tail = drawn.slice(drawn.length / 2);
+    const steps = tail
+      .slice(1)
+      .map((value, index) => value - (tail[index] ?? 0))
+      .filter(Number.isFinite);
+
+    const mean = steps.reduce((a, b) => a + b, 0) / steps.length;
+    const standardDeviation = Math.sqrt(
+      steps.reduce((a, b) => a + (b - mean) ** 2, 0) / steps.length,
+    );
+
+    return {
+      variation: mean === 0 ? 1 : standardDeviation / mean,
+      backwards: steps.filter((step) => step < -1e-9).length,
+    };
+  }
+
+  test('motion stays smooth with no jitter', () => {
+    const { variation, backwards } = measure(0);
+    assert.equal(backwards, 0, 'motion must never reverse');
+    assert.ok(variation < 0.05, `variation ${(variation * 100).toFixed(1)} % is too high`);
+  });
+
+  test('motion stays smooth with 15 ms of jitter', () => {
+    const { variation, backwards } = measure(15);
+    assert.equal(backwards, 0);
+    /* The arrival-based implementation measured 35.8 % here. Anything near 1 % means
+       the render clock is doing its job. */
+    assert.ok(
+      variation < 0.1,
+      `variation ${(variation * 100).toFixed(1)} % — jitter is leaking into motion`,
+    );
+  });
+
+  test('motion stays smooth with 30 ms of jitter', () => {
+    const { variation, backwards } = measure(30);
+    assert.equal(backwards, 0);
+    assert.ok(
+      variation < 0.15,
+      `variation ${(variation * 100).toFixed(1)} % at 30 ms jitter (arrival-based was 62.5 %)`,
+    );
+  });
+
+  test('an entity never jumps backwards, however the packets arrive', () => {
+    const { backwards } = measure(40);
+    assert.equal(backwards, 0, 'a negative step is visible as a stutter');
   });
 });

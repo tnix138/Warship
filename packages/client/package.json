@@ -12,7 +12,7 @@
     "typecheck": "tsc -b tsconfig.json",
     "assets:generate": "node scripts/generate-assets.mjs",
     "clean": "rimraf dist node_modules/.cache",
-    "test": "tsx --test src/**/*.test.ts"
+    "test": "pnpm --filter @warship/server run build && tsx --test src/**/*.test.ts"
   },
   "dependencies": {
     "@msgpack/msgpack": "^3.1.3",

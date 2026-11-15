@@ -16,6 +16,7 @@
  */
 
 import {
+  AIM_ASSIST_FACTOR,
   GRID_COLUMNS,
   GRID_ROWS,
   GRID_SIZE,
@@ -533,6 +534,41 @@ export interface MotionStats {
  * side-slip — a naval feel is achieved through turn rate, not through vehicle
  * physics. Pure function: returns a new state.
  */
+/**
+ * Advance one ship by `dt` seconds, honouring mouse aim exactly as the server does.
+ *
+ * `stepMotion` alone cannot express aiming: the server rotates the hull toward the
+ * client's `aim` (capped by how fast the ship can physically turn), and only then
+ * integrates position along that heading. A client that predicts with plain
+ * `stepMotion` drops that rotation entirely, so it disagrees with the server on every
+ * tick — permanent rubber-banding that no amount of correction smoothing can hide.
+ *
+ * Both ends call this, so they cannot drift apart.
+ */
+export function stepShipMotion(
+  state: MotionState,
+  intent: MovementIntent & { readonly aim?: number | null },
+  stats: MotionStats,
+  dt: number,
+  options: { readonly aimAssistFactor?: number } = {},
+): MotionState {
+  const aim = intent.aim ?? null;
+
+  if (aim === null) return stepMotion(state, intent, stats, dt);
+
+  /* Aim beats the keyboard for this tick, exactly like the server: the hull swings
+     toward the cursor as far as it may, and `turn` is not applied again. */
+  const assist = options.aimAssistFactor ?? AIM_ASSIST_FACTOR;
+  const heading = rotateTowards(state.rotation, aim, stats.turnRate * assist * dt);
+
+  return stepMotion(
+    { ...state, rotation: heading },
+    { turn: 0, throttle: intent.throttle },
+    stats,
+    dt,
+  );
+}
+
 export function stepMotion(
   state: MotionState,
   intent: MovementIntent,

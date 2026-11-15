@@ -1,6 +1,7 @@
 import { Container, Graphics, TilingSprite, type Texture } from 'pixi.js';
 
 import {
+  RENDER_WATER_PARALLAX,
   RENDER_WATER_SCROLL_X,
   RENDER_WATER_SCROLL_Y,
   RENDER_WATER_TILE_SIZE,
@@ -62,13 +63,27 @@ export class Ocean {
     this.#drawVignette(width, height);
   }
 
-  /** Advance the current and drift the tiles. `deltaMS` comes from the Pixi ticker. */
-  update(deltaMS: number): void {
+  /**
+   * Advance the current and drift the tiles. `deltaMS` comes from the Pixi ticker.
+   *
+   * `shipSpeed` is what makes the water read as moving rather than as wallpaper. The
+   * tile scroll is the sum of two terms:
+   *
+   *   - a small constant current, so calm water is never dead frozen;
+   *   - the camera's own displacement, scaled by `RENDER_WATER_PARALLAX`, so the surface
+   *     streams past at the speed the ship is actually travelling.
+   *
+   * Without the second term the ocean looks identical whether you are stationary or at
+   * flank speed — which is exactly how a static ocean reads, regardless of how nicely
+   * the texture animates.
+   */
+  update(deltaMS: number, shipSpeed = 0): void {
     const dt = deltaMS / 1000;
+    const travel = shipSpeed * RENDER_WATER_PARALLAX;
 
-    this.#near.tilePosition.x += RENDER_WATER_SCROLL_X * dt;
+    this.#near.tilePosition.x += (RENDER_WATER_SCROLL_X + travel) * dt;
     this.#near.tilePosition.y += RENDER_WATER_SCROLL_Y * dt;
-    this.#far.tilePosition.x += RENDER_WATER_SCROLL_X * dt * 0.35;
+    this.#far.tilePosition.x += (RENDER_WATER_SCROLL_X + travel * 0.45) * dt * 0.35;
     this.#far.tilePosition.y += RENDER_WATER_SCROLL_Y * dt * 0.35;
   }
 

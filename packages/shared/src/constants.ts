@@ -437,6 +437,14 @@ export const RENDER_WATER_TILE_SIZE = 512 as const;
 /** Water scroll rate, in world units per second, purely cosmetic. */
 export const RENDER_WATER_SCROLL_X = 6 as const;
 export const RENDER_WATER_SCROLL_Y = 3 as const;
+/**
+ * How much of the ship's own speed is added to the water scroll.
+ *
+ * This is what makes the sea read as moving: the tile drift tracks the camera's travel,
+ * so the surface streams past at a rate proportional to speed rather than at a fixed
+ * cosmetic rate that looks identical whether you are anchored or at flank speed.
+ */
+export const RENDER_WATER_PARALLAX = 1 as const;
 /** Blink period of the "you are here" ring under the local player's ship. */
 export const RENDER_SELF_RING_PULSE_MS = 1_400 as const;
 

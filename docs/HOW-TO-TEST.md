@@ -19,22 +19,26 @@ Open <http://localhost:5173>. Two tabs give you multiplayer.
 
 ## 2. What to check
 
-| #   | Check                  | Expected                                               | If it fails                |
-| --- | ---------------------- | ------------------------------------------------------ | -------------------------- |
-| 1   | Status (top right)     | green dot, `online`, then `shard-0 · 20 Hz`            | see §3                     |
-| 2   | Hull bar (bottom left) | fills to `140 / 140` for `normal`                      | player never joined — §3.2 |
-| 3   | **WASD**               | `W`/`S` throttle, `A`/`D` turn                         | §4.1                       |
-| 4   | **Mouse aim**          | ship turns toward the cursor                           | §4.2                       |
-| 5   | **Wheel**              | zooms in/out around the cursor                         | §4.3                       |
-| 6   | Debug → `entities`     | `1` alone, `2` with a second tab nearby                | §4.4                       |
-| 7   | Debug → `tick`         | climbs ~20 per second                                  | server not ticking — §3.1  |
-| 8   | Debug → `buffer`       | `2`–`5` (interpolation buffer)                         | §3.2                       |
-| 9   | Debug → `sent`         | climbs while you hold a key                            | listener dead — §4.1       |
-| 10  | Debug → `input`        | `thr +1` / `turn -1` while holding keys                | listener dead — §4.1       |
-| 11  | **AoI**                | sail away from the other tab; `entities` drops `2 → 1` | §4.4                       |
-| 12  | **Interpolation**      | the _other_ ship glides, no per-tick hopping           | §3.2                       |
-| 13  | **Prediction**         | _your_ ship reacts on the frame you press the key      | §3.2                       |
-| 14  | Debug → `corrections`  | `0`, or a small `max` while driving normally           | §4.5                       |
+| #   | Check                    | Expected                                               | If it fails |
+| --- | ------------------------ | ------------------------------------------------------ | ----------- |
+| 1   | Status (top right)       | green dot, `online`, then `shard-0 · 20 Hz`            | §3          |
+| 2   | Hull bar (bottom left)   | fills to `140 / 140` for `normal`                      | §3          |
+| 3   | **WASD**                 | `W`/`S` throttle, `A`/`D` turn                         | §4.1        |
+| 4   | **Mouse aim**            | ship turns toward the cursor                           | §4.2        |
+| 5   | **Wheel**                | zooms in/out around the cursor                         | §4.3        |
+| 6   | Debug → `entities`       | `1` alone, `2` with a second tab nearby                | §4.4        |
+| 7   | Debug → `tick`           | climbs ~20 per second                                  | §3          |
+| 8   | Debug → `interp buffer`  | `3 frames (100ms)`                                     | §4.6        |
+| 9   | Debug → `sent`           | climbs while you hold a key                            | §4.1        |
+| 10  | Debug → `input`          | `thr +1` / `turn -1` while holding keys                | §4.1        |
+| 11  | **AoI**                  | sail away from the other tab; `entities` drops `2 → 1` | §4.4        |
+| 12  | **Interpolation**        | the _other_ ship glides, no per-tick hopping           | §4.6        |
+| 13  | **Prediction**           | _your_ ship reacts on the frame you press the key      | §4.5        |
+| 14  | Debug → `prediction err` | under `1 unit`; a spike after a network hiccup is fine | §4.8        |
+| 15  | Debug → `corrections`    | `0 (last 60s)` while driving normally                  | §4.8        |
+| 16  | **Buoys**                | amber/orange/white marks slide past you as you move    | §4.7        |
+| 17  | **Wake**                 | a short foam trail behind your own ship                | §4.7        |
+| 18  | **Own-ship motion**      | your ship glides; it does not stutter at 20 Hz         | §4.5        |
 
 Ship classes: `?ship=speed`, `?ship=normal`, `?ship=power`.
 Key-logging: `?debug=keys` (or `localStorage.warshipDebugKeys = '1'`).
@@ -183,12 +187,64 @@ AoI radius is **3000 units** on an 8000×8000 **wrapping** world.
 - So to see culling you must travel a _real_ 3000+ units, which is about 12 seconds
   at `normal` speed (240 u/s).
 
-### 4.5 `corrections` keeps climbing
+### 4.5 Your own ship stutters / `corrections` keeps climbing
 
-Small corrections are normal on a laggy link — they are the client being told what
-really happened. A large `max` (hundreds of units) means the prediction and the
-server disagree, which usually means the page is running a different build than the
-server: restart (§3).
+Your ship and everyone else's are drawn by different machinery, so they fail
+differently:
+
+- **Your ship** is drawn from the _prediction_, which runs the same 20 Hz physics as
+  the server and blends between two ticks for display. It must move on every rendered
+  frame. If it visibly advances in steps, the blend is broken — not the network.
+- **Other ships** are drawn from the _interpolation buffer_, 100 ms behind. Their
+  smoothness depends on snapshots arriving; see §4.6.
+
+`corrections` counts disagreements between the prediction and the server:
+
+- `0 (last 60s)` while driving normally is the healthy state.
+- A handful after a network hiccup is expected: the client is being told what really
+  happened and eases the difference out over a few hundred milliseconds.
+- A large `max` (hundreds of units) means the two are running _different physics_.
+  There is only one movement implementation (`stepShipMotion` in `@warship/shared`),
+  so that almost always means the page and the server are on different builds — §3.
+- Errors above 64 units are snapped rather than eased, because easing a teleport looks
+  like the ship is on a rubber band.
+
+### 4.6 Remote ships look jerky
+
+Interpolation renders `INTERPOLATION_DELAY_MS` (100 ms, two ticks) behind the newest
+data, so it always has a pair of snapshots to blend between. That reduces, but cannot
+remove, the need for both ends of the pair to exist.
+
+- `interp buffer` below `2` means snapshots are not arriving fast enough to
+  interpolate at all — look at the network, not the interpolation code.
+- Jerkiness that only appears on a _laggy_ connection is arrival jitter. The sampler
+  time-bases on **server ticks**, not on arrival times, precisely so packet jitter does
+  not reach the screen; the measured difference is 62 % motion variation before that
+  change and under 1 % after.
+
+### 4.7 The world feels static — no sense of motion
+
+The water is a **screen-space tiling texture**: identical everywhere, and scrolling on
+its own, so it cannot show you moving. What proves motion is something _fixed_ going
+past you. Three cues were added for that:
+
+- **Buoys** — 120 world-space markers, derived deterministically from an index hash so
+  every client sees the same layout with no server bandwidth. Drive past one and the
+  movement is unambiguous.
+- **Wake** — foam behind your own ship only (not every entity: it would multiply the
+  particle count for something barely visible on other hulls). Pooled, 40 particles,
+  1.4 s fade.
+- **Grid** — a faint lattice every 2 000 units, drawn only for the visible region.
+
+If none of these appear, the world layer is not being added to the camera — check the
+console for a Pixi error rather than the network panel.
+
+### 4.8 Motion is smooth but the ship is in the wrong place
+
+That is the server disagreeing with the prediction, and it is what `prediction err` and
+`corrections` are for. A steadily climbing error means the two are running different
+physics: the shared `stepShipMotion` is the only movement implementation, so a large
+mismatch almost always means the page and the server are on different builds — §3.
 
 ---
 
