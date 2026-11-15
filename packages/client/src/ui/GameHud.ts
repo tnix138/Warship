@@ -49,6 +49,10 @@ export class GameHud {
   readonly #buffered = document.getElementById('stat-buffered');
   readonly #pending = document.getElementById('stat-pending');
   readonly #corrections = document.getElementById('stat-corrections');
+  readonly #offsetX = document.getElementById('stat-offset-x');
+  readonly #offsetRot = document.getElementById('stat-offset-rot');
+  readonly #maxOffset = document.getElementById('stat-max-offset');
+  readonly #easeTau = document.getElementById('stat-ease-tau');
   readonly #predictionError = document.getElementById('stat-prediction-error');
   readonly #input = document.getElementById('stat-input');
   readonly #sent = document.getElementById('stat-sent');
@@ -67,6 +71,10 @@ export class GameHud {
     buffered: 0,
     delayMs: 0,
     correcting: false,
+    offset: 0,
+    offsetRotation: 0,
+    maxOffset: 0,
+    easeTau: 0.08,
   };
   #lastHpText = '';
   #lastNetLabel = '';
@@ -173,6 +181,10 @@ export class GameHud {
     buffered: number;
     delayMs: number;
     correcting: boolean;
+    offset: number;
+    offsetRotation: number;
+    maxOffset: number;
+    easeTau: number;
   }): void {
     this.#lastPrediction = stats;
   }
@@ -198,6 +210,16 @@ export class GameHud {
       this.#corrections,
       `${String(this.#lastPrediction.recent)} (last 60s) · max ${this.#lastPrediction.largest.toFixed(1)}u`,
     );
+
+    /* The four numbers that explain *why* a correction is visible: how far the drawn pose
+       is displaced right now, by how much in angle, the worst displacement seen recently,
+       and the time constant currently in use for easing it away. */
+    const offsetNow = this.#lastPrediction.offset;
+    const offsetSignX = offsetNow > 0 ? '+' : '';
+    setText(this.#offsetX, `${offsetSignX}${offsetNow.toFixed(2)} units`);
+    setText(this.#offsetRot, `${this.#lastPrediction.offsetRotation.toFixed(3)} rad`);
+    setText(this.#maxOffset, `${this.#lastPrediction.maxOffset.toFixed(1)} units (last 60s)`);
+    setText(this.#easeTau, `${(this.#lastPrediction.easeTau * 1000).toFixed(0)} ms`);
   }
 
   /* ------------------------------------------------------------------------ */

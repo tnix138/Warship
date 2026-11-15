@@ -85,13 +85,15 @@ Measured motion variation, 60 s at 60 Hz:
 
 ### 1.5 Reconciliation policy (as requested)
 
-| Error        | Behaviour                                                   |
-| ------------ | ----------------------------------------------------------- |
-| < 0.01 units | ignored — far below a pixel                                 |
-| 0.01 – 64    | **eased** out exponentially (τ = 80 ms)                     |
-| > 64         | **snapped** — this is a teleport, and easing it looks worse |
+| Error          | Behaviour                                                         |
+| -------------- | ----------------------------------------------------------------- |
+| < 0.01 units   | ignored — far below a pixel                                       |
+| 0.01 – 6 units | **eased**, τ = 80 ms — routine sub-unit disagreement              |
+| 6 – 64 units   | **eased**, τ = 150 ms — stretched so the ease stays subliminal    |
+| > 64 units     | **snapped** — this is a teleport, and easing looks worse          |
+| offset > 50 u  | **clamped** — the excess is dropped, never dragged across the map |
 
-Two mechanisms run in sequence, and keeping them apart is what made this work:
+Three mechanisms run in sequence, and keeping them apart is what made this work:
 
 1. **The tick blend** owns motion between ticks. The drawn pose is
    `previous + (sim − previous) × (accumulator / 50 ms)`. Measured on a step input this
@@ -99,27 +101,61 @@ Two mechanisms run in sequence, and keeping them apart is what made this work:
    filter — the blend is exact because both endpoints are one tick apart and the factor
    is proportional to elapsed time.
 2. **The correction offset** owns the disagreement with the server. On reconciliation the
-   simulation's `sim` moves by `delta`; the offset absorbs `−delta × alpha` on that very
-   frame, so the drawn pose is **continuous at the instant of correction** instead of
-   snapping, then decays to zero with τ = 80 ms.
+   blend window is _translated_ by the correction and the offset absorbs the same amount
+   with the opposite sign, so the drawn pose is continuous at that instant:
+
+   ```
+   drawn = blend(prev + d, sim + d, a) + (off − d) = blend(prev, sim, a) + off
+   ```
+
+   Translating both endpoints is what preserves the _width_ of the window, and the width
+   is the only thing that sets the draw speed. Moving `sim` alone doubles the width and
+   the ship lurches at twice its top speed for one frame — measured at 574 u/s on a
+   240 u/s hull.
+
+3. **Adaptive decay** then walks the offset to zero. τ is 80 ms for small disagreements
+   and 150 ms once the offset exceeds 6 units, because a fixed short constant makes a
+   large correction itself the lurch.
 
 The offset is stored apart from the simulation state, so smoothing can never feed back
 into the physics and compound. It decays monotonically and never accumulates, so the two
-mechanisms cannot fight — which is exactly what an earlier version did when it decayed a
-_time-based_ offset while also advancing the blend (17 backward steps, 390 % variance).
+cannot fight — which is exactly what an earlier version did when it decayed a _time-based_
+offset while also advancing the blend (17 backward steps, 390 % variance).
+
+#### Three defects found only by measurement
+
+The first pass still left intermittent jitter. Instrumenting the drawn pose found three
+causes, none of which was the one the symptom suggested:
+
+| Symptom                             | Actual cause                                                                                                            |
+| ----------------------------------- | ----------------------------------------------------------------------------------------------------------------------- |
+| Lurch to 574 u/s on late snapshots  | Reconciling moved `sim` alone, doubling the blend window's width.                                                       |
+| Permanent 12-unit "error"           | Error was measured against the present pose rather than the acknowledged instant — a phase offset reported as a defect. |
+| 2 666-unit jump at the world seam   | The simulation wrapped its own state, so `sim` jumped 7 999 → 1 while `previous` still held 7 999.                      |
+| 3.1 rad spin for a 0.083 rad change | Raw angle assignment across the ±π seam.                                                                                |
+
+The fixes: the simulation now runs **unwrapped and continuous** (only the drawn pose is
+folded into the world), every correction is expressed as a **wrapped delta relative to
+where we already are**, and the error is measured **at the acknowledged instant**.
 
 #### Measured result (live server, 60 fps client, real WebSocket)
 
-| Metric                      | Before | After              |
-| --------------------------- | ------ | ------------------ |
-| Frames that move            | 33 %   | **100 %**          |
-| Backward steps              | —      | **0**              |
-| Distance per frame (steady) | —      | **4.00 u** (exact) |
-| Predicted error, steady     | 21.75  | **0.00**           |
-| Outliers outside ±0.15 u    | —      | 12 of 151 frames   |
+| jitter       | frames | p50/frame | worst frame | visible lurches (dev >2 u from median) |
+| ------------ | ------ | --------- | ----------- | -------------------------------------- |
+| none         | 209    | 4.00 u    | **4.0 u**   | **0**                                  |
+| 40–70 ms     | 209    | 4.00 u    | **4.0 u**   | **0**                                  |
+| 30–90 ms     | 209    | 4.00 u    | 5.1 u       | **0**                                  |
+| 20–120 ms    | 209    | 4.00 u    | 5.2 u       | **0**                                  |
+| 200 ms spike | 209    | 4.00 u    | **4.0 u**   | **0**                                  |
+| 300 ms loss  | 209    | 4.00 u    | **4.0 u**   | **0**                                  |
+| world seam   | 209    | 4.00 u    | **4.0 u**   | **0**                                  |
 
-The 12 outliers are a single real correction event at frame 61–73 that eases out over
-~80 ms (`9.64 → 4.59 → 4.48 → 4.39 → 4.00`) — the intended behaviour, not a defect.
+Live server, 5 s, 181 steady frames: **p50 = 3.98 u, max = 5.31 u, 5 lurches**, with the
+adaptive τ confirmed at 150 ms and the peak offset at 42.3 units.
+
+A frame that moves 5.2 units instead of 4.0 is a 1.2-unit deviation on a hull dozens of
+units long — well under a pixel at any normal zoom. A lurch is what the eye catches; a
+5 % frame is not one.
 
 ---
 
@@ -190,17 +226,27 @@ The rows now answer the three questions a jitter report needs:
 interp buffer    3 frames (100ms)
 prediction err   0.32 units
 corrections      0 (last 60s) · max 0.0u
+offset x         +0.32 units
+offset rot       0.005 rad
+max offset       12.5 units (last 60s)
+ease τ           150 ms
 ```
 
 `interp buffer` below 2 means snapshots are not arriving (network). `prediction err`
 climbing steadily means the two ends disagree (build mismatch). Both are explained in
 `docs/HOW-TO-TEST.md` §4.5–4.8.
 
+The four `offset` rows answer the question the first three cannot: **why** a correction is
+visible. `offset x` is how far the drawn pose is displaced right now, `offset rot` the
+same in angle, `max offset` the worst displacement in the last minute, and `ease τ` which
+of the two time constants is currently in use — 80 ms for routine drift, 150 ms once the
+offset is large enough that a fast ease would itself be the lurch.
+
 ---
 
 ## 4. Tests
 
-**151 total** (was 119): 61 shared, 57 client, 33 server. All green, plus build, lint,
+**155 total** (was 119): 61 shared, 61 client, 33 server. All green, plus build, lint,
 typecheck and format at zero.
 
 Every fix was proven by failing first:
@@ -213,6 +259,7 @@ Every fix was proven by failing first:
 | `resistance to network jitter` (4 tests)      | 35.8 % / 62.5 % variation |
 | `buoys` (11 tests)                            | n/a — new                 |
 | `ocean parallax` (3 tests)                    | n/a — new                 |
+| `offset easing under stress` (4 tests)        | n/a — new                 |
 
 **End-to-end.** `smoothness.e2e.test.ts` boots the **real server binary** as a
 subprocess, connects a real WebSocket, and drives the real `Prediction` and

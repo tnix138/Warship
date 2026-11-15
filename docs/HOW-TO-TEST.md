@@ -19,26 +19,28 @@ Open <http://localhost:5173>. Two tabs give you multiplayer.
 
 ## 2. What to check
 
-| #   | Check                    | Expected                                               | If it fails |
-| --- | ------------------------ | ------------------------------------------------------ | ----------- |
-| 1   | Status (top right)       | green dot, `online`, then `shard-0 · 20 Hz`            | §3          |
-| 2   | Hull bar (bottom left)   | fills to `140 / 140` for `normal`                      | §3          |
-| 3   | **WASD**                 | `W`/`S` throttle, `A`/`D` turn                         | §4.1        |
-| 4   | **Mouse aim**            | ship turns toward the cursor                           | §4.2        |
-| 5   | **Wheel**                | zooms in/out around the cursor                         | §4.3        |
-| 6   | Debug → `entities`       | `1` alone, `2` with a second tab nearby                | §4.4        |
-| 7   | Debug → `tick`           | climbs ~20 per second                                  | §3          |
-| 8   | Debug → `interp buffer`  | `3 frames (100ms)`                                     | §4.6        |
-| 9   | Debug → `sent`           | climbs while you hold a key                            | §4.1        |
-| 10  | Debug → `input`          | `thr +1` / `turn -1` while holding keys                | §4.1        |
-| 11  | **AoI**                  | sail away from the other tab; `entities` drops `2 → 1` | §4.4        |
-| 12  | **Interpolation**        | the _other_ ship glides, no per-tick hopping           | §4.6        |
-| 13  | **Prediction**           | _your_ ship reacts on the frame you press the key      | §4.5        |
-| 14  | Debug → `prediction err` | under `1 unit`; a spike after a network hiccup is fine | §4.8        |
-| 15  | Debug → `corrections`    | `0 (last 60s)` while driving normally                  | §4.8        |
-| 16  | **Buoys**                | amber/orange/white marks slide past you as you move    | §4.7        |
-| 17  | **Wake**                 | a short foam trail behind your own ship                | §4.7        |
-| 18  | **Own-ship motion**      | your ship glides; it does not stutter at 20 Hz         | §4.5        |
+| #   | Check                    | Expected                                                | If it fails |
+| --- | ------------------------ | ------------------------------------------------------- | ----------- |
+| 1   | Status (top right)       | green dot, `online`, then `shard-0 · 20 Hz`             | §3          |
+| 2   | Hull bar (bottom left)   | fills to `140 / 140` for `normal`                       | §3          |
+| 3   | **WASD**                 | `W`/`S` throttle, `A`/`D` turn                          | §4.1        |
+| 4   | **Mouse aim**            | ship turns toward the cursor                            | §4.2        |
+| 5   | **Wheel**                | zooms in/out around the cursor                          | §4.3        |
+| 6   | Debug → `entities`       | `1` alone, `2` with a second tab nearby                 | §4.4        |
+| 7   | Debug → `tick`           | climbs ~20 per second                                   | §3          |
+| 8   | Debug → `interp buffer`  | `3 frames (100ms)`                                      | §4.6        |
+| 9   | Debug → `sent`           | climbs while you hold a key                             | §4.1        |
+| 10  | Debug → `input`          | `thr +1` / `turn -1` while holding keys                 | §4.1        |
+| 11  | **AoI**                  | sail away from the other tab; `entities` drops `2 → 1`  | §4.4        |
+| 12  | **Interpolation**        | the _other_ ship glides, no per-tick hopping            | §4.6        |
+| 13  | **Prediction**           | _your_ ship reacts on the frame you press the key       | §4.5        |
+| 14  | Debug → `prediction err` | under `1 unit`; a spike after a network hiccup is fine  | §4.8        |
+| 15  | Debug → `corrections`    | `0 (last 60s)` while driving normally                   | §4.8        |
+| 16  | **Buoys**                | amber/orange/white marks slide past you as you move     | §4.7        |
+| 17  | **Wake**                 | a short foam trail behind your own ship                 | §4.7        |
+| 18  | **Own-ship motion**      | your ship glides; it does not stutter at 20 Hz          | §4.5        |
+| 19  | Debug → `offset x`       | small, and returns to `0` within ~150 ms                | §4.9        |
+| 20  | Debug → `ease τ`         | `80 ms` normally; `150 ms` right after a big correction | §4.9        |
 
 Ship classes: `?ship=speed`, `?ship=normal`, `?ship=power`.
 Key-logging: `?debug=keys` (or `localStorage.warshipDebugKeys = '1'`).
@@ -245,6 +247,22 @@ That is the server disagreeing with the prediction, and it is what `prediction e
 `corrections` are for. A steadily climbing error means the two are running different
 physics: the shared `stepShipMotion` is the only movement implementation, so a large
 mismatch almost always means the page and the server are on different builds — §3.
+
+### 4.9 A correction is visible — which number explains it?
+
+Four rows exist purely for this. Read them in this order:
+
+| Row          | What it tells you                                                                                        |
+| ------------ | -------------------------------------------------------------------------------------------------------- |
+| `offset x`   | How far the drawn pose is displaced right now. Non-zero is normal; it falls to 0 within ~150 ms.         |
+| `offset rot` | The same displacement in angle. Large values mean the server and you disagree on heading, not position.  |
+| `max offset` | The worst displacement in the last minute. A steady climb means snapshots are arriving late or unevenly. |
+| `ease τ`     | Which time constant is in use: `80 ms` routine, `150 ms` once the offset passes 6 units.                 |
+
+If `offset x` spikes and takes noticeably longer than `ease τ` to return to 0, the
+network is dropping or delaying snapshots — check `interp buffer` (§4.6). If `offset x`
+stays near zero while the ship still stutters, the problem is not reconciliation at all
+and is worth reporting with the value of every row in this table.
 
 ---
 

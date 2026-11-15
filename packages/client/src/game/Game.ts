@@ -142,6 +142,10 @@ export async function createGame(options: GameOptions): Promise<Game> {
             buffered: world.interpolation.bufferedFrames,
             delayMs: world.interpolation.delayMs,
             correcting: prediction.correcting,
+            offset: prediction.offset,
+            offsetRotation: prediction.offsetRotation,
+            maxOffset: prediction.maxOffset,
+            easeTau: prediction.easeTau,
           });
         }
 

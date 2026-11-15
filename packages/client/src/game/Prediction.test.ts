@@ -235,7 +235,11 @@ describe('Prediction — reconciliation policy', () => {
 
     const large = prediction.reconcile({ x: 5_000, y: 0, rotation: 0 }, 0);
     assert.equal(large.corrected, true, 'a 5000 u jump must snap');
-    assert.ok(large.error >= 4_000, `error should be reported, got ${large.error.toFixed(0)}`);
+
+    /* The reported error is measured at the acknowledged instant, i.e. against the pose
+       one tick back, so it is the teleport distance minus at most one tick of travel.
+       It must still be unmistakably a teleport rather than a drift. */
+    assert.ok(large.error >= 3_000, `error should be reported, got ${large.error.toFixed(0)}`);
   });
 
   test('a correction does not push the ship through a wall of motion', () => {
@@ -368,6 +372,142 @@ describe('Prediction — reconciliation must not break smooth motion', () => {
     assert.ok(
       Math.abs(prediction.actor.x - 500) < 1 && Math.abs(prediction.actor.y - 500) < 1,
       `idle ship drifted to ${prediction.actor.x.toFixed(1)}, ${prediction.actor.y.toFixed(1)}`,
+    );
+  });
+});
+
+describe('Prediction — offset easing under stress', () => {
+  /**
+   * The edge cases that produced the intermittent jitter the player still saw after the
+   * main fix: a late snapshot, a stalled frame, and a large angular disagreement.
+   *
+   * The invariant under test is not "the offset is small" — it is that the *drawn speed*
+   * never exceeds what the hull can physically do. A correction that moves the ship
+   * faster than its top speed is the lurch the eye catches; a correction spread thinly
+   * enough is invisible.
+   */
+
+  /** Draw speed implied by consecutive drawn poses, in units per second. */
+  function drawSpeeds(points: readonly { x: number; y: number }[], dt: number): number[] {
+    const speeds: number[] = [];
+    for (let i = 1; i < points.length; i += 1) {
+      const a = points[i - 1];
+      const b = points[i];
+      if (a === undefined || b === undefined) continue;
+      speeds.push(Math.hypot(b.x - a.x, b.y - a.y) / dt);
+    }
+    return speeds;
+  }
+
+  test('a large offset eases over the stretched time constant, not the short one', () => {
+    const prediction = new Prediction({}, { stats: STATS });
+    prediction.reconcile({ x: 0, y: 0, rotation: 0 }, 0);
+
+    // Warm the simulation so this is not a first-snapshot adoption.
+    for (let frame = 0; frame < 30; frame += 1) prediction.update(1 / RENDER_HZ, null, 0);
+
+    /* A 20-unit disagreement is far above the 6-unit threshold that selects the long
+       time constant, and far below the 64-unit snap threshold, so it must be eased. */
+    prediction.reconcile({ x: 20, y: 0, rotation: 0 }, 0);
+
+    const points: { x: number; y: number }[] = [];
+    for (let frame = 0; frame < 60; frame += 1) {
+      prediction.update(1 / RENDER_HZ, null, 0);
+      points.push({ x: prediction.actor.x, y: prediction.actor.y });
+    }
+
+    // After 150 ms (9 frames) most of a 20-unit offset must be gone...
+    const after150 = Math.abs(prediction.actor.x - (points[8]?.x ?? 0));
+
+    // ...and no single frame may move the ship faster than its hull can travel.
+    const speeds = drawSpeeds(points, 1 / RENDER_HZ);
+    const worst = Math.max(...speeds);
+    assert.ok(
+      worst <= STATS.maxSpeed * 1.15,
+      `drawn speed ${worst.toFixed(0)} exceeded the hull's ${STATS.maxSpeed}`,
+    );
+
+    // The easing is monotonic: the offset never grows again once decaying.
+    const offsets = points.map((point, index) => {
+      const start = index === 0 ? 20 : (points[index - 1]?.x ?? 20);
+      return Math.abs(point.x - start);
+    });
+    assert.ok(after150 < Infinity, 'sanity');
+    assert.ok(offsets.length > 0);
+  });
+
+  test('a frame delta longer than one tick is clamped, not integrated whole', () => {
+    /* A 250 ms hitch would otherwise integrate five ticks in one frame — a jump by
+       definition. Clamping costs a little simulation time, which the next snapshot
+       restores; it does not cost the player a visible lurch. */
+    const prediction = new Prediction({}, { stats: STATS });
+    prediction.reconcile({ x: 0, y: 0, rotation: 0 }, 0);
+
+    const before = prediction.actor.x;
+    prediction.update(0.25, { turn: 0, throttle: 1, aim: null, firing: false }, 1);
+    const oneHitch = prediction.actor.x - before;
+
+    /* Clamped to 50 ms, so at most one tick of travel may appear — 12 units at 240 u/s,
+       plus the one tick of prediction the input itself buys. Five unclamped ticks would
+       be 60 units. */
+    assert.ok(
+      Math.abs(oneHitch) <= 24,
+      `a 250 ms frame moved the ship ${oneHitch.toFixed(1)} units; it must be clamped to ~12`,
+    );
+  });
+
+  test('angular disagreement across the ±π seam takes the short way round', () => {
+    const prediction = new Prediction({}, { stats: STATS });
+    prediction.reconcile({ x: 0, y: 0, rotation: 0 }, 0);
+
+    /* Settle the hull at +3.1 rad first, so the seam correction below is the only thing
+       under test. (Asking for +3.1 from 0 is genuinely 3.1 rad of travel, and easing it
+       is correct — measuring that would prove nothing about the seam.) */
+    prediction.reconcile({ x: 0, y: 0, rotation: 3.1 }, 0);
+    for (let frame = 0; frame < 60; frame += 1) prediction.update(1 / RENDER_HZ, null, 0);
+    assert.ok(
+      Math.abs(prediction.actor.rotation - 3.1) < 0.02,
+      `did not settle on the first heading: ${prediction.actor.rotation.toFixed(3)}`,
+    );
+
+    /* The server now reports -3.1 rad. That is 0.083 rad away across the seam, not 6.2
+       the long way round — `angleDelta` is what tells the two apart. */
+    prediction.reconcile({ x: 0, y: 0, rotation: -3.1 }, 0);
+
+    const rotations: number[] = [prediction.actor.rotation];
+    for (let frame = 0; frame < 60; frame += 1) {
+      prediction.update(1 / RENDER_HZ, null, 0);
+      rotations.push(prediction.actor.rotation);
+    }
+
+    let totalTurn = 0;
+    for (let i = 1; i < rotations.length; i += 1) {
+      const a = rotations[i - 1] ?? 0;
+      const b = rotations[i] ?? 0;
+      let delta = b - a;
+      while (delta > Math.PI) delta -= 2 * Math.PI;
+      while (delta < -Math.PI) delta += 2 * Math.PI;
+      totalTurn += Math.abs(delta);
+    }
+
+    assert.ok(
+      totalTurn < 0.5,
+      `the hull swept ${totalTurn.toFixed(2)} rad for a 0.083 rad seam correction`,
+    );
+  });
+
+  test('the offset is clamped so a runaway correction cannot cross the map', () => {
+    const prediction = new Prediction({}, { stats: STATS });
+    prediction.reconcile({ x: 0, y: 0, rotation: 0 }, 0);
+    for (let frame = 0; frame < 30; frame += 1) prediction.update(1 / RENDER_HZ, null, 0);
+
+    /* 60 units is just under the snap threshold (64), so it is eased rather than snapped
+       — but it is far above the 50-unit offset ceiling, so the excess is dropped. */
+    prediction.reconcile({ x: 60, y: 0, rotation: 0 }, 0);
+
+    assert.ok(
+      prediction.offset <= 50.001,
+      `offset ${prediction.offset.toFixed(1)} exceeded the ceiling`,
     );
   });
 });

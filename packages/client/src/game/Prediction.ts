@@ -3,6 +3,7 @@ import {
   normalizeAngle,
   stepShipMotion,
   TICK_DURATION_S,
+  wrappedDelta,
   wrapWorldPosition,
   type InputFrame,
   type Radians,
@@ -79,6 +80,39 @@ export interface PredictionOptions {
  */
 /** Time constant for easing a reconciliation offset away, in seconds. */
 const CORRECTION_SMOOTH_TAU = 0.08;
+
+/**
+ * Time constant used once the offset is large, in seconds.
+ *
+ * A fixed 80 ms ease is tuned for the routine sub-unit disagreement of a healthy
+ * connection. Forcing a several-unit offset through it makes the correction itself a
+ * visible lurch — the ease moves the ship faster than its own top speed. Stretching the
+ * time constant keeps the *speed* of the correction bounded, which is the thing the eye
+ * actually judges.
+ */
+const CORRECTION_SMOOTH_TAU_FAR = 0.15;
+
+/** Offset magnitude, in world units, above which the far time constant applies. */
+const CORRECTION_TAU_THRESHOLD = 6;
+
+/**
+ * Hard ceiling on the positional offset, in world units.
+ *
+ * Past this the correction is a teleport, not a drift, and easing it would drag the ship
+ * across the map. The excess is absorbed directly instead.
+ */
+const CORRECTION_OFFSET_MAX = 50;
+
+/**
+ * Longest frame the prediction will integrate in one call, in seconds.
+ *
+ * A garbage-collection pause or a background tab produces a huge `deltaS`. Integrating
+ * it whole forces several catch-up ticks in a single frame, which is a jump by
+ * definition. Clamping means a long frame loses a little simulation time instead of
+ * producing a visible lurch; the server remains authoritative, so the lost time is
+ * corrected on the next snapshot rather than accumulating.
+ */
+const MAX_FRAME_DELTA_S = 0.05;
 
 const CORRECTION_EPSILON = 0.01;
 
@@ -171,6 +205,18 @@ export class Prediction {
   #offsetY = 0;
   #offsetRotation = 0;
 
+  /**
+   * Largest positional offset since the last 60 s prune, in world units.
+   *
+   * `largestCorrection` records the disagreement found at reconcile time; this records
+   * what the *drawn* pose actually had to absorb, which is a different number whenever
+   * two corrections land in the same frame.
+   */
+  #maxOffset = 0;
+
+  /** Time constant chosen for the offset now decaying, in seconds. */
+  #offsetTau = CORRECTION_SMOOTH_TAU;
+
   /** True until the drawn pose has been seeded from the simulation. */
   #renderSeeded = false;
 
@@ -223,7 +269,36 @@ export class Prediction {
     return this.#recentCorrections.length;
   }
 
-  /** True once prediction is active (kept for HUD compatibility). */
+  /** Current horizontal draw offset, in world units. Debug/HUD only. */
+  get offsetX(): number {
+    return this.#offsetX;
+  }
+
+  /** Current vertical draw offset, in world units. Debug/HUD only. */
+  get offsetY(): number {
+    return this.#offsetY;
+  }
+
+  /** Magnitude of the positional draw offset, in world units. */
+  get offset(): number {
+    return Math.hypot(this.#offsetX, this.#offsetY);
+  }
+
+  /** Angular draw offset, in radians. */
+  get offsetRotation(): number {
+    return this.#offsetRotation;
+  }
+
+  /** Largest positional offset seen in the last 60 s, in world units. */
+  get maxOffset(): number {
+    return this.#maxOffset;
+  }
+
+  /** Time constant currently in use for easing the offset, in seconds. */
+  get easeTau(): number {
+    return this.#offsetTau;
+  }
+
   /**
    * True while a reconciliation offset is still easing out.
    *
@@ -251,8 +326,10 @@ export class Prediction {
    * @param input the input sampled this frame, or `null` if none is due.
    * @param seq the sequence to use when `input` is non-null.
    */
-  update(deltaS: number, input: InputFrame | null, seq: number): void {
+  update(rawDeltaS: number, input: InputFrame | null, seq: number): void {
     if (!this.#ready) return;
+
+    const deltaS = Math.min(Math.max(rawDeltaS, 0), MAX_FRAME_DELTA_S);
 
     if (input !== null) {
       this.#pending.push({
@@ -304,39 +381,58 @@ export class Prediction {
       return { corrected: false, error: 0 };
     }
 
-    // Drop everything the server has already accounted for, then replay the rest.
-    while (this.#pending.length > 0 && (this.#pending[0]?.seq ?? Infinity) <= ackSeq) {
-      this.#pending.shift();
-    }
+    const beforeX = this.#sim.x;
+    const beforeY = this.#sim.y;
+    const beforeRotation = this.#sim.rotation;
 
-    const previousX = this.#sim.x;
-    const previousY = this.#sim.y;
-    const previousRotation = this.#sim.rotation;
+    /* Advance the authoritative pose to *now*: start from the server's pose at `ackSeq`
+       and apply every input the server had not consumed yet.
 
-    /* Re-base onto the authoritative pose, then replay the inputs the server had not yet
-       consumed. That reconstructs the present state from the server's own numbers, so the
-       difference against what we predicted for the same instant is the genuine error —
-       a fraction of a unit in normal play.
-
-       Comparing against the raw snapshot instead would be comparing two different
-       instants: a snapshot describes `ackSeq`, and the client has integrated past it.
-       That mistake reads as a constant one-tick error (12 units at 240 u/s) and is what
-       turned every reconciliation into a visible step. */
-    this.#sim.x = server.x;
-    this.#sim.y = server.y;
-    this.#sim.rotation = server.rotation;
+       The pose is expressed *relative to where we already are*, not adopted raw. The
+       server canonicalises both coordinates (`wrapWorldPosition` into the first tile) and
+       heading (`normalizeAngle` into (-π, π]), while the simulation deliberately runs
+       unwrapped and continuous. Assigning the raw values would make a ship at x = 7 990
+       re-based to x = 10 look like an 8 000-unit teleport, and a heading of 3.1 rad
+       reported as -3.1 look like a 6.2 rad spin. Applying only the shortest delta keeps
+       the blend window one tick wide across both seams. */
+    const rebase = wrappedDelta({ x: beforeX, y: beforeY }, { x: server.x, y: server.y });
+    this.#sim.x = beforeX + rebase.x;
+    this.#sim.y = beforeY + rebase.y;
+    this.#sim.rotation = normalizeAngle(
+      beforeRotation + angleDelta(beforeRotation, server.rotation),
+    );
     this.#sim.speed = server.speed ?? this.#sim.speed;
 
     for (const pending of this.#pending) {
+      if (pending.seq <= ackSeq) continue;
       this.#step(
         { turn: pending.turn, throttle: pending.throttle, aim: pending.aim },
         TICK_DURATION_S,
       );
     }
 
-    const error = Math.hypot(this.#sim.x - previousX, this.#sim.y - previousY);
-    const rotationError = Math.abs(angleDelta(previousRotation, this.#sim.rotation));
+    /* Error is the disagreement at the acknowledged instant, not the distance the replay
+       moved us.
+
+       The re-based pose is advanced over the inputs the server had not consumed, so `sim`
+       legitimately ends up a full tick ahead of `beforeX` even when prediction was
+       perfect — one tick at 240 u/s is 12 units. Reporting that as the error would show a
+       permanent 12-unit "correction" and send anyone debugging this chasing a phase
+       offset that is not a defect.
+
+       The like-for-like reference is the pose the re-based state had *before* the replay,
+       which is exactly `server` — so the real disagreement is between the served pose and
+       the pose our own prediction had reached at that tick. `#previous` is that pose: it
+       is one tick behind `#sim` and therefore sits at the acknowledged boundary. */
+    const gap = wrappedDelta(this.#previous, server);
+    const error = Math.hypot(gap.x, gap.y);
+    const rotationError = Math.abs(angleDelta(this.#previous.rotation, server.rotation));
     this.#lastError = error;
+
+    // The server has consumed these; their effect is already in the pose we were handed.
+    while (this.#pending.length > 0 && (this.#pending[0]?.seq ?? Infinity) <= ackSeq) {
+      this.#pending.shift();
+    }
 
     if (error > this.#snapThreshold) {
       /* A genuine teleport — respawn, long packet loss, or an authoritative correction.
@@ -349,24 +445,52 @@ export class Prediction {
 
     if (error > CORRECTION_EPSILON || rotationError > 0.001) this.#record(error);
 
-    /* Absorb the correction into the draw offset instead of moving the simulation window.
+    /* Translate the whole blend window, then cancel it in the offset.
 
-       The drawn pose is `blend(previous, sim, alpha) + offset`. Reconciliation changes
-       `sim` by `delta`, which would move the blend output by `delta * alpha` on this very
-       frame — the visible snap. Subtracting that exact amount from the offset makes the
-       drawn pose continuous at the instant of correction; the offset then decays to zero
-       over `CORRECTION_SMOOTH_TAU`, so the ship drifts onto the authoritative trajectory
-       instead of jumping onto it.
+       The drawn pose is `blend(previous, sim, alpha) + offset`. Moving `sim` alone would
+       change the *width* of the window, and that width is what sets the draw speed — a
+       full tick of correction doubles it and the ship lurches at twice its top speed for
+       a frame (measured: 574 u/s on a 240 u/s hull). Moving neither endpoint leaves the
+       error unapplied. Translating both keeps the width, and cancelling the translation
+       in the offset keeps the drawn pose continuous:
 
-       This keeps one mechanism per concern: the blend owns the motion between ticks, the
-       offset owns the disagreement with the server. They cannot fight, because the offset
-       decays monotonically to zero and never accumulates. */
-    const alphaNow = Math.min(1, this.#accumulatorS / TICK_DURATION_S);
-    this.#offsetX -= (this.#sim.x - previousX) * alphaNow;
-    this.#offsetY -= (this.#sim.y - previousY) * alphaNow;
-    this.#offsetRotation = normalizeAngle(
-      this.#offsetRotation - angleDelta(previousRotation, this.#sim.rotation) * alphaNow,
-    );
+         drawn = blend(prev + d, sim + d, a) + (off - d)
+               = blend(prev, sim, a) + off
+
+       The offset then decays, so the ship drifts onto the authoritative trajectory
+       instead of jumping onto it. */
+    const delta = wrappedDelta({ x: beforeX, y: beforeY }, this.#sim);
+    const deltaX = delta.x;
+    const deltaY = delta.y;
+    const deltaRotation = angleDelta(beforeRotation, this.#sim.rotation);
+
+    /* Move the *start* of the blend window, keeping its width.
+
+       The window is what the drawn pose interpolates across, and its width is the only
+       thing that sets the draw speed — so the start has to move by exactly the same
+       delta as the end. Computing it as `sim - unchanged width` (rather than by adding
+       to a value that may sit on a different angle branch or a different copy of the
+       map) keeps both seams honest: the width is one tick by construction, never 7 980
+       units and never 6.2 radians. */
+    const widthX = beforeX - this.#previous.x;
+    const widthY = beforeY - this.#previous.y;
+    const widthRotation = angleDelta(this.#previous.rotation, beforeRotation);
+
+    /* Both poses are expressed relative to `#sim` using wrapped deltas, so they always
+       land in the same copy of the map and the same angle branch. Deriving `#previous`
+       by arithmetic that ignores the seam leaves the two on different copies — one at
+       x = 5 334 and one at x = 7 996 — and the blend then draws the ship partway across
+       the world (measured: a 2 662-unit jump on a 4.5-unit frame). */
+    const back = wrappedDelta({ x: 0, y: 0 }, { x: -widthX, y: -widthY });
+    this.#previous.x = this.#sim.x + back.x;
+    this.#previous.y = this.#sim.y + back.y;
+    this.#previous.rotation = normalizeAngle(this.#sim.rotation - widthRotation);
+
+    this.#offsetX -= deltaX;
+    this.#offsetY -= deltaY;
+    this.#offsetRotation = normalizeAngle(this.#offsetRotation - deltaRotation);
+
+    this.#noteOffset();
 
     return { corrected: false, error };
   }
@@ -395,9 +519,15 @@ export class Prediction {
 
   /** Adopt a server state wholesale, discarding local history. */
   #adopt(server: { x: number; y: number; rotation: Radians; speed?: number }): void {
-    this.#sim.x = server.x;
-    this.#sim.y = server.y;
-    this.#sim.rotation = server.rotation;
+    /* Adopt the pose nearest to where the simulation already is, rather than the
+       server's canonical tile. The simulation runs unwrapped, so adopting x = 10 while
+       the ship sits at x = 7 990 would make the first blend interpolate the whole world. */
+    const near = wrappedDelta(this.#sim, server);
+    this.#sim.x += near.x;
+    this.#sim.y += near.y;
+    this.#sim.rotation = normalizeAngle(
+      this.#sim.rotation + angleDelta(this.#sim.rotation, server.rotation),
+    );
     this.#sim.speed = server.speed ?? 0;
     Object.assign(this.#previous, this.#sim);
     this.#accumulatorS = 0;
@@ -445,13 +575,16 @@ export class Prediction {
       dt,
     );
 
-    /* The world wraps, so the server's `wrapWorldPosition` must be mirrored here or
-       the client would predict a straight line into the void while the server turns
-       the corner. */
-    const wrapped = wrapWorldPosition(next);
+    /* Deliberately *not* wrapped.
 
-    this.#sim.x = wrapped.x;
-    this.#sim.y = wrapped.y;
+       The server canonicalises positions into the first tile, but the client keeps its
+       own simulation continuous. Wrapping here makes `#sim` jump from 7 999 to 1 while
+       `#previous` still holds 7 999, so the blend interpolates 7 998 units backwards
+       across the map on the frame the ship crosses the seam — measured as a 2 666-unit
+       jump. Keeping the simulation unwrapped means the tick-to-tick delta is always the
+       real one, and only the drawn pose is folded into the world for rendering. */
+    this.#sim.x = next.x;
+    this.#sim.y = next.y;
     this.#sim.rotation = normalizeAngle(next.rotation);
     this.#sim.speed = next.speed;
   }
@@ -497,19 +630,42 @@ export class Prediction {
     );
 
     /* Decay the reconciliation offset and fold it into the drawn pose. A first-order
-       decay over `CORRECTION_SMOOTH_TAU` is monotonic and never overshoots, so it cannot
+       decay over the chosen time constant is monotonic and never overshoots, so it cannot
        introduce a backward step the way a fixed-rate schedule could. */
     if (deltaS > 0) {
-      const decay = Math.exp(-deltaS / CORRECTION_SMOOTH_TAU);
+      const magnitude = Math.hypot(this.#offsetX, this.#offsetY);
+      const tau =
+        magnitude > CORRECTION_TAU_THRESHOLD ? CORRECTION_SMOOTH_TAU_FAR : CORRECTION_SMOOTH_TAU;
+      this.#offsetTau = tau;
+
+      const decay = Math.exp(-deltaS / tau);
       this.#offsetX *= decay;
       this.#offsetY *= decay;
       this.#offsetRotation *= decay;
+
       if (Math.abs(this.#offsetX) < 1e-4) this.#offsetX = 0;
       if (Math.abs(this.#offsetY) < 1e-4) this.#offsetY = 0;
+      if (Math.abs(this.#offsetRotation) < 1e-5) this.#offsetRotation = 0;
+
+      this.#noteOffset();
     }
 
-    this.actor.x = this.#renderX + this.#offsetX;
-    this.actor.y = this.#renderY + this.#offsetY;
+    this.#writeActor();
+  }
+
+  /**
+   * Fold the drawn pose into the world and publish it.
+   *
+   * The simulation runs in a continuous frame so its deltas stay real; rendering needs the
+   * canonical tile, because that is where the camera and every other entity live.
+   */
+  #writeActor(): void {
+    const drawn = wrapWorldPosition({
+      x: this.#renderX + this.#offsetX,
+      y: this.#renderY + this.#offsetY,
+    });
+    this.actor.x = drawn.x;
+    this.actor.y = drawn.y;
     this.actor.rotation = normalizeAngle(this.#renderRotation + this.#offsetRotation);
     this.actor.speed = this.#sim.speed;
   }
@@ -532,10 +688,25 @@ export class Prediction {
     this.#offsetY = 0;
     this.#offsetRotation = 0;
 
-    this.actor.x = this.#renderX + this.#offsetX;
-    this.actor.y = this.#renderY + this.#offsetY;
-    this.actor.rotation = normalizeAngle(this.#renderRotation + this.#offsetRotation);
-    this.actor.speed = this.#sim.speed;
+    this.#writeActor();
+  }
+
+  /**
+   * Track the largest offset the drawn pose has had to absorb, for the debug HUD.
+   *
+   * Also enforces `CORRECTION_OFFSET_MAX`: the excess is dropped rather than eased, so a
+   * pathological correction cannot drag the ship across the screen over a tenth of a
+   * second.
+   */
+  #noteOffset(): void {
+    const magnitude = Math.hypot(this.#offsetX, this.#offsetY);
+    if (magnitude > this.#maxOffset) this.#maxOffset = magnitude;
+
+    if (magnitude > CORRECTION_OFFSET_MAX) {
+      const scale = CORRECTION_OFFSET_MAX / magnitude;
+      this.#offsetX *= scale;
+      this.#offsetY *= scale;
+    }
   }
 
   #record(error: number): void {
