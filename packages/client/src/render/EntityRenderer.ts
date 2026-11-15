@@ -2,16 +2,19 @@ import { Container, Graphics, Sprite } from 'pixi.js';
 
 import { RENDER_SELF_RING_PULSE_MS, SHIP_CLASSES, type ShipClass } from '@warship/shared';
 
-import type { ClientEntity, ClientWorld } from '../game/World';
+import type { RenderEntity } from '../game/World';
 import type { GameTextures } from './assets';
 
 /**
- * Draws every entity in `ClientWorld` as a ship.
+ * Draws the poses `ClientWorld.renderEntities()` hands it.
  *
- * Deliberately simple for this milestone: sprites are placed directly on the latest
- * snapshot, with no interpolation. Sprites are pooled by entity id so the renderer
- * does not allocate a `Container` per frame, and a health bar plus a "you are here"
- * ring make multi-player state readable.
+ * The renderer knows nothing about snapshots, ticks, interpolation or prediction: it
+ * receives a list of poses with an alpha and places pooled sprites at those poses.
+ * That separation is why interpolation and prediction could be added without
+ * touching a single line of drawing code.
+ *
+ * Sprites are pooled by entity id, so a steady 100-player scene allocates nothing per
+ * frame; departed entities fade out rather than vanishing on the frame they leave AoI.
  */
 
 interface ShipView {
@@ -26,30 +29,28 @@ interface ShipView {
 export class EntityRenderer {
   readonly view = new Container();
 
-  readonly #world: ClientWorld;
   readonly #textures: GameTextures;
   readonly #views = new Map<string, ShipView>();
   readonly #barWidth = 34;
 
-  constructor(world: ClientWorld, textures: GameTextures) {
-    this.#world = world;
+  constructor(textures: GameTextures) {
     this.#textures = textures;
     this.view.eventMode = 'none';
   }
 
   /**
-   * Sync the display list with the world.
+   * Sync the display list with one frame's poses.
    *
-   * @param now the frame's timestamp in ms, driving the self-ring pulse. There is
-   *   deliberately no `deltaMS` parameter: nothing here is interpolated yet.
+   * @param poses what to draw, already interpolated/predicted by the caller.
+   * @param now frame timestamp in ms, driving the self-ring pulse.
    */
-  update(now: number): void {
+  update(poses: readonly RenderEntity[], now: number): void {
     const seen = new Set<string>();
 
-    for (const entity of this.#world.entities.values()) {
-      seen.add(entity.id);
-      const view = this.#viewFor(entity);
-      this.#apply(entity, view, now);
+    for (const pose of poses) {
+      seen.add(pose.id);
+      const view = this.#viewFor(pose);
+      this.#apply(pose, view, now);
     }
 
     for (const [id, view] of this.#views) {
@@ -76,7 +77,7 @@ export class EntityRenderer {
   /*  Internals                                                               */
   /* ------------------------------------------------------------------------ */
 
-  #viewFor(entity: ClientEntity): ShipView {
+  #viewFor(entity: RenderEntity): ShipView {
     const existing = this.#views.get(entity.id);
     if (existing !== undefined) {
       // A late-joining entity can change class; swap the texture if it does.
@@ -104,8 +105,13 @@ export class EntityRenderer {
     return view;
   }
 
-  #apply(entity: ClientEntity, view: ShipView, now: number): void {
-    const isSelf = this.#world.selfId === entity.id;
+  #apply(entity: RenderEntity, view: ShipView, now: number): void {
+    const isSelf = entity.isSelf;
+
+    // Removal fade: the frame a ship leaves the area of interest it lingers briefly
+    // at decreasing alpha instead of popping out of existence.
+    view.root.alpha = entity.alpha;
+    view.root.visible = entity.alpha > 0.01;
 
     view.root.position.set(entity.x, entity.y);
     // Textures are drawn bow-up (-y); rotate 90° so rotation 0 faces +x.

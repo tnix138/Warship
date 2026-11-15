@@ -59,15 +59,26 @@ export class World {
    * Spawns walk around the ring one step at a time so two players joining back to
    * back never appear on top of each other.
    */
-  addPlayer(options: { readonly id: string; readonly shipClass?: ShipClass }): Player {
+  addPlayer(options: {
+    readonly id: string;
+    readonly shipClass?: ShipClass;
+    /**
+     * Explicit spawn point. Used by tests to place players far apart for Area of
+     * Interest, and by the future "join a friend" flow. Omit it for the default ring.
+     */
+    readonly at?: { readonly x: number; readonly y: number };
+  }): Player {
     const angle = this.#spawnCursor * SPAWN_ANGLE_STEP;
     this.#spawnCursor += 1;
+
+    const x = options.at?.x ?? SPAWN_CENTER_X + Math.cos(angle) * SPAWN_RING_RADIUS;
+    const y = options.at?.y ?? SPAWN_CENTER_Y + Math.sin(angle) * SPAWN_RING_RADIUS;
 
     const player = new Player({
       id: options.id,
       shipClass: options.shipClass,
-      x: SPAWN_CENTER_X + Math.cos(angle) * SPAWN_RING_RADIUS,
-      y: SPAWN_CENTER_Y + Math.sin(angle) * SPAWN_RING_RADIUS,
+      x,
+      y,
       rotation: angle,
       tick: this.#tick,
     });

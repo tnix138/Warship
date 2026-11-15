@@ -7,14 +7,14 @@
  */
 
 /* -------------------------------------------------------------------------- */
-/*  Hull stats                                                                 */
+/*  Ship stats                                                                 */
 /* -------------------------------------------------------------------------- */
 
 /**
  * Effective stats of a ship, after ship class and purchased upgrades.
  * `ShipClassDefinition` in `constants.ts` is the *base*; this is the *result*.
  */
-export interface HullStats {
+export interface ShipStats {
   readonly maxHp: number;
   readonly maxSpeed: number;
   readonly turnRate: number;

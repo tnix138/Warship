@@ -12,7 +12,8 @@
     "start": "node dist/index.js",
     "typecheck": "tsc -b tsconfig.json",
     "clean": "rimraf dist *.tsbuildinfo",
-    "test": "tsx --test src/**/*.test.ts"
+    "test": "tsx --test src/**/*.test.ts",
+    "state": "tsx src/tools/state.ts"
   },
   "dependencies": {
     "@msgpack/msgpack": "3.1.3",

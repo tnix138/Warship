@@ -15,6 +15,7 @@ import { after, before, describe, test } from 'node:test';
 import { decode, encode } from '@msgpack/msgpack';
 import {
   CloseCode,
+  NETWORK_MAX_MESSAGES_PER_SECOND,
   MessageType,
   PROTOCOL_VERSION,
   ShipClass,
@@ -25,6 +26,7 @@ import {
   type JoinMessage,
   type PlayerStateMessage,
   type ServerMessage,
+  type SnapshotEntity,
   type SnapshotMessage,
   type WelcomeMessage,
 } from '@warship/shared';
@@ -124,27 +126,96 @@ async function connect(port: number): Promise<TestClient> {
  * helper immune to queue position: the server ticks at 20 Hz regardless of when the
  * caller started looking.
  */
-async function latestSnapshot(
+/**
+ * Replay every snapshot a client received into the world state that client believes.
+ *
+ * This is deliberately the same algorithm the real client uses (`ClientWorld`): apply
+ * a `full` snapshot as a reset, then apply deltas on top of it and drop the ids in
+ * `removed`. Tests must not read a single delta frame and conclude an entity is gone —
+ * a delta only carries what *changed*, so an untouched ship is legitimately absent.
+ */
+function materialise(client: TestClient, fromTick = -1): Map<string, SnapshotEntity> {
+  const world = new Map<string, SnapshotEntity>();
+  /* Only frames at or after `fromTick` are replayed when a bound is given: a test
+     that repositions players must not re-read the JOIN-time snapshot taken while
+     those ships were still on the spawn ring. */
+  const snapshots = client.frames.filter(
+    (frame): frame is SnapshotMessage => frame.t === MessageType.SNAPSHOT && frame.tick >= fromTick,
+  );
+
+  for (const snapshot of snapshots) {
+    if (snapshot.full) world.clear();
+    for (const entity of snapshot.entities) {
+      // Deltas may omit `shipClass`; keep the one we already know.
+      const previous = world.get(entity.id);
+      world.set(entity.id, {
+        id: entity.id,
+        x: entity.x,
+        y: entity.y,
+        rotation: entity.rotation,
+        hp: entity.hp,
+        shipClass: entity.shipClass ?? previous?.shipClass,
+      });
+    }
+    for (const gone of snapshot.removed ?? []) {
+      world.delete(gone.id);
+    }
+  }
+
+  return world;
+}
+
+/** The tick of the newest snapshot received, or -1. */
+function latestTick(client: TestClient): number {
+  let newest = -1;
+  for (const frame of client.frames) {
+    if (frame.t === MessageType.SNAPSHOT && frame.tick > newest) newest = frame.tick;
+  }
+  return newest;
+}
+
+/**
+ * Wait until the client's reconstructed world contains `id` beyond `afterTick`, and
+ * return that reconstructed world together with the tick it came from.
+ *
+ * Waiting on the *reconstructed* view rather than on a single frame is what makes
+ * these tests honest under delta compression: a ship that has not moved since the
+ * previous delta simply does not appear in the next one.
+ */
+async function worldAfter(
   client: TestClient,
   afterTick = -1,
   mustInclude?: string,
-): Promise<SnapshotMessage> {
-  const deadline = Date.now() + 3_000;
+  timeoutMs = 3_000,
+): Promise<{ entities: Map<string, SnapshotEntity>; tick: number }> {
+  const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
-    const snapshots = client.frames.filter(
-      (frame): frame is SnapshotMessage =>
-        frame.t === MessageType.SNAPSHOT &&
-        frame.tick > afterTick &&
-        (mustInclude === undefined || frame.entities.some((entity) => entity.id === mustInclude)),
-    );
-    const newest = snapshots[snapshots.length - 1];
-    if (newest !== undefined) return newest;
+    const tick = latestTick(client);
+    if (tick > afterTick) {
+      const entities = materialise(client, afterTick + 1);
+      if (mustInclude === undefined || entities.has(mustInclude)) {
+        return { entities, tick };
+      }
+    }
     await new Promise((resolve) => setTimeout(resolve, 10));
   }
   throw new Error(
-    `no snapshot newer than tick ${String(afterTick)} arrived in time ` +
-      `(received ${client.frames.map((f) => f.t).join(',') || 'nothing'})`,
+    `world did not contain ${mustInclude ?? 'anything'} after tick ${String(afterTick)} ` +
+      `(latest tick ${String(latestTick(client))}, ` +
+      `received ${client.frames.map((f) => f.t).join(',') || 'nothing'})`,
   );
+}
+
+/** Convenience wrapper when only the entity matters. */
+async function entityAfter(
+  client: TestClient,
+  afterTick: number,
+  id: string,
+): Promise<{ entity: SnapshotEntity; tick: number }> {
+  const { entities, tick } = await worldAfter(client, afterTick, id);
+  const entity = entities.get(id);
+  if (entity === undefined) throw new Error(`entity ${id} missing from the world`);
+  return { entity, tick };
 }
 
 /** Connect, wait for WELCOME, JOIN, and wait for the first PLAYER_STATE. */
@@ -314,13 +385,11 @@ describe('join', { concurrency: 1 }, () => {
   test('a joined player appears in the next snapshot', async () => {
     const { client, playerState } = await join(port, ShipClass.Speed);
 
-    const snapshot = await latestSnapshot(client, -1, playerState.entityId);
-    const self = snapshot.entities.find((entity) => entity.id === playerState.entityId);
+    const { entity: self, tick } = await entityAfter(client, -1, playerState.entityId);
 
-    assert.ok(self !== undefined, 'the joining player must be in the snapshot');
     assert.equal(self.shipClass, ShipClass.Speed);
     assert.equal(self.hp, playerState.maxHp);
-    assert.ok(snapshot.tick > 0);
+    assert.ok(tick > 0);
 
     client.close();
   });
@@ -334,24 +403,19 @@ describe('input drives the authoritative simulation', { concurrency: 1 }, () => 
   test('a full-throttle INPUT moves the ship away from its spawn', async () => {
     const { client, playerState } = await join(port, ShipClass.Normal);
 
-    const beforeSnapshot = await latestSnapshot(client, -1, playerState.entityId);
-    const before = beforeSnapshot.entities.find((entity) => entity.id === playerState.entityId);
-    assert.ok(before !== undefined);
+    const before = await entityAfter(client, -1, playerState.entityId);
 
     // Hold the throttle for ~300 ms of wall time: at 20 Hz that is ~6 ticks.
     for (let seq = 1; seq <= 8; seq += 1) {
-      client.send(inputFrame(seq, before.id.length + seq));
+      client.send(inputFrame(seq, before.entity.id.length + seq));
       await new Promise((resolve) => setTimeout(resolve, TICK_DURATION_MS));
     }
 
     await new Promise((resolve) => setTimeout(resolve, 120));
 
-    const after = (
-      await latestSnapshot(client, beforeSnapshot.tick, playerState.entityId)
-    ).entities.find((entity) => entity.id === playerState.entityId);
-    assert.ok(after !== undefined);
+    const after = await entityAfter(client, before.tick, playerState.entityId);
 
-    const moved = Math.hypot(after.x - before.x, after.y - before.y);
+    const moved = Math.hypot(after.entity.x - before.entity.x, after.entity.y - before.entity.y);
     assert.ok(moved > 5, `ship should have moved; moved ${moved.toFixed(2)} units`);
 
     client.close();
@@ -360,9 +424,7 @@ describe('input drives the authoritative simulation', { concurrency: 1 }, () => 
   test('the server ignores a replayed (stale) INPUT sequence number', async () => {
     const { client, playerState } = await join(port);
 
-    const startSnapshot = await latestSnapshot(client, -1, playerState.entityId);
-    const start = startSnapshot.entities.find((e) => e.id === playerState.entityId);
-    assert.ok(start !== undefined);
+    const start = await entityAfter(client, -1, playerState.entityId);
 
     // Send seq 5 with no throttle, then replay seq 3 with full throttle. The replay
     // must be dropped, so the ship must not accelerate.
@@ -371,19 +433,16 @@ describe('input drives the authoritative simulation', { concurrency: 1 }, () => 
 
     await new Promise((resolve) => setTimeout(resolve, 250));
 
-    const end = (
-      await latestSnapshot(client, startSnapshot.tick, playerState.entityId)
-    ).entities.find((e) => e.id === playerState.entityId);
-    assert.ok(end !== undefined);
+    const end = await entityAfter(client, start.tick, playerState.entityId);
 
-    const drift = Math.hypot(end.x - start.x, end.y - start.y);
+    const drift = Math.hypot(end.entity.x - start.entity.x, end.entity.y - start.entity.y);
     assert.ok(drift < 5, `replayed input must not move the ship; drifted ${drift.toFixed(2)}`);
 
     client.close();
   });
 
   test('malformed INPUT fields are clamped instead of trusted', async () => {
-    const { client } = await join(port);
+    const { client, playerState } = await join(port);
 
     // throttle 99 and turn -99 must be clamped to 1 / -1, not applied literally.
     client.socket.send(
@@ -397,8 +456,8 @@ describe('input drives the authoritative simulation', { concurrency: 1 }, () => 
     );
 
     await new Promise((resolve) => setTimeout(resolve, 150));
-    const snapshot = await latestSnapshot(client);
-    assert.ok(snapshot.entities.length >= 1, 'server still healthy after hostile input');
+    const world = await worldAfter(client, -1, playerState.entityId);
+    assert.ok(world.entities.size >= 1, 'server still healthy after hostile input');
 
     client.close();
   });
@@ -420,16 +479,18 @@ describe('multiple clients', { concurrency: 1 }, () => {
     );
 
     // Both must be present in a snapshot from *each* client's perspective.
-    const snapshotA = await latestSnapshot(a.client, -1, b.playerState.entityId);
-    const snapshotB = await latestSnapshot(b.client, -1, a.playerState.entityId);
+    const worldA = await worldAfter(a.client, -1, b.playerState.entityId);
+    const worldB = await worldAfter(b.client, -1, a.playerState.entityId);
 
-    for (const snapshot of [snapshotA, snapshotB]) {
-      const ids = snapshot.entities.map((entity) => entity.id);
-      assert.ok(ids.includes(a.playerState.entityId), 'snapshot must contain player A');
-      assert.ok(ids.includes(b.playerState.entityId), 'snapshot must contain player B');
+    for (const [label, world] of [
+      ['A', worldA],
+      ['B', worldB],
+    ] as const) {
+      assert.ok(world.entities.has(a.playerState.entityId), `${label} must see player A`);
+      assert.ok(world.entities.has(b.playerState.entityId), `${label} must see player B`);
     }
 
-    const seenByA = snapshotA.entities.find((e) => e.id === b.playerState.entityId);
+    const seenByA = worldA.entities.get(b.playerState.entityId);
     assert.equal(seenByA?.shipClass, ShipClass.Power, 'A must see B with the right class');
 
     a.client.close();
@@ -440,17 +501,24 @@ describe('multiple clients', { concurrency: 1 }, () => {
     const staying = await join(port);
     const leaving = await join(port);
 
-    const beforeLeave = await latestSnapshot(staying.client, -1, staying.playerState.entityId);
+    const beforeLeave = await worldAfter(staying.client, -1, leaving.playerState.entityId);
 
     const leavingId = leaving.playerState.entityId;
     leaving.client.close();
 
-    // Give the socket close handler and a couple of ticks time to land.
-    await new Promise((resolve) => setTimeout(resolve, 200));
+    // The departure reaches the staying client either as absence from a full
+    // snapshot or as a `removed` entry on a delta; `materialise` handles both, so
+    // this waits on the reconstructed world rather than on a single frame.
+    const deadline = Date.now() + 2_000;
+    let stillVisible = true;
+    while (stillVisible && Date.now() < deadline) {
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      if (latestTick(staying.client) > beforeLeave.tick) {
+        stillVisible = materialise(staying.client).has(leavingId);
+      }
+    }
 
-    const snapshot = await latestSnapshot(staying.client, beforeLeave.tick + 2);
-    const ids = snapshot.entities.map((entity) => entity.id);
-    assert.ok(!ids.includes(leavingId), 'a closed player must not linger in snapshots');
+    assert.ok(!stillVisible, 'a closed player must not linger in the client world');
 
     staying.client.close();
   });
@@ -473,13 +541,205 @@ describe('rate limiting', { concurrency: 1 }, () => {
 
     const pongs = client.frames.filter((frame) => frame.t === MessageType.PONG).length;
     assert.ok(pongs > 0, 'some pings should have been answered');
-    assert.ok(pongs <= 31, `at most the window budget may be answered; got ${String(pongs)}`);
+    // Derived from the constant, never hardcoded: this test must keep passing when
+    // the budget is tuned.
+    const budget = NETWORK_MAX_MESSAGES_PER_SECOND;
+    assert.ok(
+      pongs <= budget + 1,
+      `at most the window budget (+1 for boundary jitter) may be answered; got ${String(pongs)} of ${String(budget)}`,
+    );
 
     // The connection must still be alive: newer snapshots keep arriving.
-    const snapshot = await latestSnapshot(client, -1, playerState.entityId);
-    assert.ok(snapshot.entities.some((entity) => entity.id === playerState.entityId));
+    const world = await worldAfter(client, -1, playerState.entityId);
+    assert.ok(world.entities.has(playerState.entityId));
 
     client.close();
+  });
+});
+
+/* -------------------------------------------------------------------------- */
+/*  Area of Interest                                                          */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * A dedicated server whose clock we can drive by hand.
+ *
+ * AoI tests need players at *chosen* positions, so each test spawns through the
+ * world directly and then ticks once. Driving the clock manually removes the race
+ * between "spawn both players" and "the next tick fires".
+ */
+async function withAoiServer(
+  run: (context: {
+    port: number;
+    server: NetworkServer;
+    tick: () => void;
+    spawn: (id: string, x: number, y: number) => void;
+    move: (id: string, x: number, y: number) => void;
+    resetAoi: () => void;
+  }) => Promise<void>,
+): Promise<void> {
+  let instance: NetworkServer | null = null;
+  const manualClock = new SimulationClock({
+    tickRate: 20,
+    onTick: () => {
+      instance?.loop.tick();
+    },
+  });
+
+  const fresh = new NetworkServer({
+    host: '127.0.0.1',
+    port: 0,
+    wsPath: '/ws',
+    shardId: 'aoi-shard',
+    maxPlayers: 10,
+    logger,
+    clock: manualClock,
+  });
+  instance = fresh;
+
+  const freshPort = await fresh.listen();
+  manualClock.start();
+  // Stop the automatic ticking immediately: this test controls every tick.
+  manualClock.stop();
+
+  try {
+    await run({
+      port: freshPort,
+      server: fresh,
+      tick: () => {
+        fresh.loop.tick();
+      },
+      /* Forget what each client was told, so the next tick emits a full snapshot
+         from the players' *current* positions. Without this, the test races the
+         `full` frame the server sends at JOIN time, while both ships still sit on
+         the default spawn ring. */
+      resetAoi: () => {
+        fresh.loop.resetAoiMemory();
+      },
+      spawn: (id, x, y) => {
+        fresh.world.addPlayer({ id, at: { x, y } });
+        fresh.world.refreshGrid();
+      },
+      move: (id, x, y) => {
+        const player = fresh.world.getPlayer(id);
+        if (player === undefined) throw new Error(`no player ${id}`);
+        player.x = x;
+        player.y = y;
+        fresh.world.refreshGrid();
+      },
+    });
+  } finally {
+    manualClock.stop();
+    fresh.close();
+  }
+}
+
+describe('Area of Interest', { concurrency: 1 }, () => {
+  test('two players far apart never see each other', async () => {
+    await withAoiServer(async ({ port, tick, move, resetAoi }) => {
+      /* Two ships are placed at the world's true antipodes.
+
+         They must NOT be picked as "far in raw coordinates": the world is a torus,
+         so (1000,1000) and (7000,7000) are 2828 units apart across the seam — inside
+         the interest radius. (2000,2000) and (6000,6000) are 5657 apart, which is
+         also the maximum distance two points can have on an 8000x8000 torus. */
+      const a = await join(port);
+      const b = await join(port);
+
+      move(a.playerState.entityId, 2_000, 2_000);
+      move(b.playerState.entityId, 6_000, 6_000);
+
+      // Discard the JOIN-time view (both ships were still on the spawn ring when it
+      // was taken) and make the next frame describe the world as it is now.
+      resetAoi();
+      const movedAtTick = latestTick(a.client) + 1;
+
+      for (let index = 0; index < 6; index += 1) tick();
+      await new Promise((resolve) => setTimeout(resolve, 150));
+
+      const worldA = materialise(a.client, movedAtTick);
+      const worldB = materialise(b.client, movedAtTick);
+
+      assert.ok(worldA.has(a.playerState.entityId), 'A must always see itself');
+      assert.ok(worldB.has(b.playerState.entityId), 'B must always see itself');
+
+      assert.ok(
+        !worldA.has(b.playerState.entityId),
+        'A must NOT see B: antipodal, 5657 units apart, past the 3000-unit interest radius',
+      );
+      assert.ok(
+        !worldB.has(a.playerState.entityId),
+        'B must NOT see A: antipodal, 5657 units apart, past the 3000-unit interest radius',
+      );
+    });
+  });
+
+  test('two players close together do see each other', async () => {
+    await withAoiServer(async ({ port, tick, move, resetAoi }) => {
+      const a = await join(port);
+      const b = await join(port);
+
+      // 400 units apart: comfortably inside the radius.
+      move(a.playerState.entityId, 4_000, 4_000);
+      move(b.playerState.entityId, 4_400, 4_000);
+      resetAoi();
+      const movedAtTick = latestTick(a.client) + 1;
+
+      for (let index = 0; index < 6; index += 1) tick();
+      await new Promise((resolve) => setTimeout(resolve, 150));
+
+      const worldA = materialise(a.client, movedAtTick);
+      const worldB = materialise(b.client, movedAtTick);
+
+      assert.ok(worldA.has(b.playerState.entityId), 'A must see B 400 units away');
+      assert.ok(worldB.has(a.playerState.entityId), 'B must see A 400 units away');
+    });
+  });
+
+  test('a ship leaving the radius is removed from the other client', async () => {
+    await withAoiServer(async ({ port, server, tick, move, resetAoi }) => {
+      const a = await join(port);
+      const b = await join(port);
+
+      // Start close enough to be mutually visible.
+      move(a.playerState.entityId, 4_000, 4_000);
+      move(b.playerState.entityId, 4_200, 4_000);
+      resetAoi();
+      const movedAtTick = latestTick(a.client) + 1;
+
+      for (let index = 0; index < 6; index += 1) tick();
+      await new Promise((resolve) => setTimeout(resolve, 150));
+
+      assert.ok(
+        materialise(a.client, movedAtTick).has(b.playerState.entityId),
+        'initial state: A sees B',
+      );
+
+      // Teleport B far away, then tick: A must be told B is gone.
+      const playerB = server.world.getPlayer(b.playerState.entityId);
+      assert.ok(playerB !== undefined);
+      playerB.x = 7_500;
+      playerB.y = 7_500;
+      server.world.refreshGrid();
+
+      const seenAt = latestTick(a.client);
+      for (let index = 0; index < 8; index += 1) tick();
+
+      const deadline = Date.now() + 2_000;
+      let stillVisible = true;
+      while (stillVisible && Date.now() < deadline) {
+        await new Promise((resolve) => setTimeout(resolve, 20));
+        if (latestTick(a.client) > seenAt) {
+          stillVisible = materialise(a.client, movedAtTick).has(b.playerState.entityId);
+        }
+      }
+
+      assert.ok(!stillVisible, 'B must disappear from A exactly when it leaves the radius');
+      assert.ok(
+        materialise(a.client, movedAtTick).has(a.playerState.entityId),
+        'A keeps seeing itself',
+      );
+    });
   });
 });
 

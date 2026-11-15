@@ -4,7 +4,8 @@ A 2D browser naval game with an **authoritative server**.
 This repository is a pnpm monorepo: shared contracts, the authoritative game server, and the PixiJS client.
 
 - **Milestone 1 (done):** monorepo, shared contracts, WebSocket server, PixiJS client rendering a tiled ocean.
-- **Milestone 2 (current):** an **authoritative simulation at 20 Hz**. Players join, steer with WASD, aim with the mouse, and every client renders the same world from full snapshots. `World` / `Player` / `Grid` / `Loop` on the server, `Connection` / `ClientWorld` / `Input` / `EntityRenderer` on the client.
+- **Milestone 3 (current):** smooth motion and scale. Client-side **interpolation** (render 100 ms in the past), client-side **prediction** with server reconciliation, server-side **Area of Interest** culling on a spatial grid, and **delta compression** with 1 Hz keyframes. Snapshot traffic drops ~70% at 20 players.
+- **Milestone 2:** an **authoritative simulation at 20 Hz**. Players join, steer with WASD, aim with the mouse, and every client renders the same world from full snapshots. `World` / `Player` / `Grid` / `Loop` on the server, `Connection` / `ClientWorld` / `Input` / `EntityRenderer` on the client.
 - Still no NPCs, loot boxes, XP or persistence wiring — those arrive once the simulation loop is proven. Deliberately absent from the network layer: interpolation, prediction, delta compression, area-of-interest culling.
 
 ## Stack
@@ -111,9 +112,15 @@ with the `warship` subprotocol. Defined in
 | 901 | `PING`         | both      | `{ nonce, sentAt }` liveness probe                                        |
 | 902 | `PONG`         | both      | echoes `nonce` + `sentAt`                                                 |
 
-Snapshots are **full, not delta**: every tick, every entity, to every client. That is
-intentionally wasteful — correctness first, bandwidth once there is something worth
-optimising (see `MILESTONE-2.md`).
+`SNAPSHOT` carries a `full: boolean` flag. The first frame of a session, and one frame
+per second thereafter, are `full` (authoritative reset). Everything in between is a
+**delta**: only entities whose position, rotation or HP changed, plus a `removed`
+list for anything that left the client's Area of Interest. A stationary ship in
+empty water costs zero bytes — the server skips the frame entirely.
+
+Entities are culled by **Area of Interest** (radius 3000 units). Your own ship also
+carries `ackSeq`, the newest input the server applied, which is what client-side
+prediction uses to reconcile.
 
 The server sends a `Ping` every 5 s and closes the socket (code `4002`) when a
 client has not answered within 15 s. Mismatched protocol versions are closed with

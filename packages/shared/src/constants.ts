@@ -15,7 +15,16 @@
 
 export const PROJECT_NAME = 'warship' as const;
 /** Bumped whenever a frame changes shape. Mismatched peers are closed with 4001. */
-export const PROTOCOL_VERSION = 2 as const;
+/**
+ * Wire protocol version.
+ *
+ * v3 added the delta-snapshot fields (`full`, `removed`, per-entity `ackSeq`) and
+ * Area-of-Interest culling. It is a breaking change with a silent failure mode — a
+ * v2 client would treat a delta as a full frame and delete every entity the delta
+ * did not mention — so the version is bumped and old clients are refused at the
+ * handshake with `4001` rather than left to misbehave.
+ */
+export const PROTOCOL_VERSION = 3 as const;
 
 /** Wire-level names. The WebSocket subprotocol is negotiated during the upgrade. */
 export const WS_PATH = '/ws' as const;
@@ -53,10 +62,28 @@ export const NETWORK_IDLE_TIMEOUT_S = 60 as const;
  * 8 KiB is enough for a full input batch plus a resume handshake, and small
  * enough that a hostile peer cannot make us allocate meaningfully.
  */
-export const NETWORK_MAX_PAYLOAD_BYTES = 8192 as const; // 8 KiB
+/**
+ * Largest inbound WebSocket frame the server accepts (uWS `maxPayloadLength`).
+ *
+ * Outbound frames are not size-capped by this constant — uWS does not limit what
+ * the server sends. The headroom exists for a future *inbound* world-state frame
+ * (a reconnect that uploads its last known snapshot), and for UPGRADE/PICKUP
+ * batches carrying ids. 16 KiB is far above anything the current protocol sends
+ * (a full 100-entity SNAPSHOT is ~7 KB) while still rejecting garbage early.
+ */
+export const NETWORK_MAX_PAYLOAD_BYTES = 16_384 as const; // 16 KiB
 
 /** Inbound frames allowed per connection per second; excess is dropped, not fatal. */
-export const NETWORK_MAX_MESSAGES_PER_SECOND = 30 as const;
+/**
+ * Inbound frames allowed per connection per second.
+ *
+ * Budget: INPUT runs at 20 Hz, the heartbeat round-trip is 1/s, and PICKUP /
+ * UPGRADE arrive in bursts when the player is near a box or in the dock. 40 leaves
+ * ~2x headroom over the steady state instead of sitting right at it, so an honest
+ * client is never punished for a hitch or a burst of clicks. Anything above this is
+ * dropped and counted, never buffered.
+ */
+export const NETWORK_MAX_MESSAGES_PER_SECOND = 40 as const;
 
 /** Pings are sent by the client at this interval so middleboxes keep the socket warm. */
 export const CLIENT_HEARTBEAT_INTERVAL_MS = 5_000 as const;
@@ -67,6 +94,19 @@ export const CLIENT_TIMEOUT_MS = 15_000 as const;
 export const CLIENT_INPUT_RATE = 20 as const;
 /** Client sends PLAYER_STATE every N ticks (server side, 20 ticks/s ÷ 5 = 4 Hz). */
 export const PLAYER_STATE_INTERVAL_TICKS = 5 as const;
+
+/**
+ * How often a client is guaranteed a **full** snapshot even when nothing changed.
+ *
+ * Delta snapshots only carry what changed, which is what makes them cheap — but it
+ * also means the client's world is only correct as long as it applied every delta in
+ * order. TCP guarantees delivery and ordering today; this keyframe is cheap insurance
+ * against a future transport change (WebTransport, an unreliable datagram channel for
+ * the fast path) and against a client-side bug that drops one frame.
+ *
+ * One per second: at 20 Hz that is 5% of frames, and it bounds any desync to ≤1 s.
+ */
+export const SNAPSHOT_KEYFRAME_INTERVAL_TICKS = TICK_RATE;
 
 /** Server rounds snapshot coordinates to this many decimals to save bytes. */
 export const SNAPSHOT_COORDINATE_DECIMALS = 2 as const;
@@ -97,6 +137,19 @@ export const WORLD_WRAPS_Y = true as const;
 export const GRID_SIZE = 2_000 as const;
 export const GRID_COLUMNS = WORLD_WIDTH / GRID_SIZE; // 4
 export const GRID_ROWS = WORLD_HEIGHT / GRID_SIZE; // 4
+
+/**
+ * How far a player can see, in world units.
+ *
+ * This is the Area-of-Interest radius: the server only tells a client about
+ * entities inside it. 3000 on a 2000-unit grid means the 3x3 neighbourhood is not
+ * enough — a ship sitting in a cell corner reaches two cells out — so AoI walks
+ * `gridCellsInRadius` rather than assuming a 3x3 block.
+ *
+ * It is also comfortably larger than the longest weapon range (1100), so a ship you
+ * can shoot is always a ship you can see.
+ */
+export const AOI_INTEREST_RADIUS = 3_000 as const;
 
 /** Where every new player is spawned: a ring inside the safe zone. */
 export const SPAWN_CENTER_X = WORLD_WIDTH / 2;

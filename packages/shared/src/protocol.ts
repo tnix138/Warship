@@ -108,8 +108,33 @@ export interface SnapshotEntity {
   readonly rotation: Radians;
   /** Current hull points. Always >= 0. */
   readonly hp: number;
-  /** Ship class, so the client can pick a sprite without a second lookup. */
-  readonly shipClass: ShipClass;
+  /**
+   * Ship class, so the client can pick a sprite without a second lookup.
+   *
+   * Optional on the wire because a *delta* snapshot only re-states fields that
+   * changed: a ship that merely moved keeps its already-known class. Always present
+   * on a full snapshot and on the first appearance of an entity.
+   */
+  readonly shipClass?: ShipClass;
+  /**
+   * Set on a delta snapshot to say "this entity is part of the update". Absent means
+   * the entity moved but is otherwise unchanged — the reader should look at the
+   * fields that are present rather than assume a whole record.
+   */
+  readonly changed?: boolean;
+  /**
+   * Present **only on the viewer's own entity**: the newest input sequence the
+   * server has applied. Client-side prediction uses it to drop acknowledged inputs
+   * before replaying the rest.
+   */
+  readonly ackSeq?: number;
+}
+
+/** One entity the client should stop drawing (left AoI, died, or disconnected). */
+export interface RemovedEntity {
+  readonly id: EntityId;
+  /** Why it went away; purely informational, the client treats them all the same. */
+  readonly reason?: 'aoi' | 'gone';
 }
 
 /* -------------------------------------------------------------------------- */
@@ -215,8 +240,20 @@ export interface SnapshotMessage extends MessageBase {
   tick: number;
   /** Server wall clock when the snapshot was built. */
   serverTime: UnixEpochMs;
-  /** Every entity the server considers relevant to this client. */
+  /**
+   * `full` = everything in this client's Area of Interest, authoritative.
+   * `delta` = only what changed since the previous snapshot, applied on top of it.
+   *
+   * The very first snapshot of a session is always `full`; the server then sends
+   * deltas while the set of visible entities is stable and falls back to `full`
+   * whenever it is not (join, leave, AoI churn) so a dropped frame can never
+   * desynchronise the client for longer than one tick.
+   */
+  readonly full: boolean;
+  /** Entities to create or update. */
   entities: readonly SnapshotEntity[];
+  /** Entities to forget. Only meaningful on a `delta`. */
+  removed?: readonly RemovedEntity[];
 }
 
 /**

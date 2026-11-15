@@ -2,6 +2,7 @@ import { Application } from 'pixi.js';
 
 import {
   CLIENT_INPUT_RATE,
+  computeShipStats,
   RENDER_BACKGROUND_COLOR,
   RENDER_MAX_DPR,
   ShipClass,
@@ -10,6 +11,7 @@ import {
 } from '@warship/shared';
 
 import { ClientWorld } from './World';
+import { Prediction } from './Prediction';
 import { InputController } from './Input';
 import { Connection } from '../net/Connection';
 import { loadTextures } from '../render/assets';
@@ -61,12 +63,13 @@ export async function createGame(options: GameOptions): Promise<Game> {
 
   const hud = new GameHud();
   const world = new ClientWorld();
+  const prediction = new Prediction();
   const camera = new Camera();
   const ocean = new Ocean(textures.water, app.screen.width, app.screen.height);
 
   app.stage.addChild(ocean.view, camera.world);
 
-  const entities = new EntityRenderer(world, textures);
+  const entities = new EntityRenderer(textures);
   camera.world.addChild(entities.view);
 
   const input = new InputController(options.canvas);
@@ -93,10 +96,34 @@ export async function createGame(options: GameOptions): Promise<Game> {
         // The first PLAYER_STATE tells us which entity is ours.
         world.selfId = state.entityId;
         hud.updateSelf(state);
+
+        // Prediction must integrate with exactly the server's numbers, or the two
+        // drift apart and every reconciliation becomes a correction.
+        prediction.setStats({
+          maxSpeed: computeShipStats(state.shipClass).maxSpeed,
+          turnRate: computeShipStats(state.shipClass).turnRate,
+        });
       },
       onSnapshot: (snapshot: SnapshotMessage) => {
         world.applySnapshot(snapshot);
-        hud.setEntityCount(snapshot.entities.length, snapshot.tick);
+
+        /* Reconcile prediction against the authority. `ackSeq` rides on our own
+           entity, so it arrives exactly once per snapshot. */
+        const self = world.self;
+        if (self !== undefined) {
+          const result = prediction.reconcile(
+            { x: self.x, y: self.y, rotation: self.rotation },
+            self.ackSeq ?? 0,
+          );
+          hud.setPredictionStats({
+            pending: prediction.pendingCount,
+            corrections: prediction.correctionCount,
+            error: result.error,
+            largest: prediction.largestCorrection,
+          });
+        }
+
+        hud.setEntityCount(world.size, snapshot.tick, snapshot.full);
       },
       onEvent: (event) => {
         hud.pushEvent(describeEvent(event.kind, event.data));
@@ -135,20 +162,32 @@ export async function createGame(options: GameOptions): Promise<Game> {
     while (inputAccumulator >= inputIntervalS) {
       inputAccumulator -= inputIntervalS;
       sequence += 1;
-      connection.sendInput(sequence, world.tick, input.snapshot(aimAt(input, camera, world)));
+      const frame = input.snapshot(aimAt(input, camera, world));
+
+      // Predict the same input locally *before* it goes on the wire, so the ship
+      // reacts on this frame rather than one round-trip later.
+      prediction.applyInput(sequence, frame, now);
+      connection.sendInput(sequence, world.tick, frame);
     }
 
-    /* Camera: follow the local ship, snapping after a respawn or teleport. */
-    const self = world.self;
-    if (self !== undefined) {
-      if (Math.hypot(camera.x - self.x, camera.y - self.y) > CAMERA_SNAP_DISTANCE) {
-        camera.focusOn(self.x, self.y);
+    /* Camera: follow the *predicted* ship, which is where the player believes they
+       are; following the authoritative pose would lag one round-trip behind. */
+    const authoritative = world.self;
+    const predicted = prediction.ready
+      ? { x: prediction.actor.x, y: prediction.actor.y }
+      : authoritative;
+
+    if (predicted !== undefined) {
+      if (Math.hypot(camera.x - predicted.x, camera.y - predicted.y) > CAMERA_SNAP_DISTANCE) {
+        camera.focusOn(predicted.x, predicted.y);
       } else {
-        camera.follow(self.x, self.y, deltaS);
+        camera.follow(predicted.x, predicted.y, deltaS);
       }
     }
 
-    entities.update(now);
+    /* Draw: interpolated poses for everyone else, predicted pose for us. */
+    const renderList = world.renderEntities(now, prediction.ready ? prediction.actor : undefined);
+    entities.update(renderList, now);
     ocean.update(deltaMS);
     hud.updateDebug(
       {
@@ -159,6 +198,7 @@ export async function createGame(options: GameOptions): Promise<Game> {
         rendererName: app.renderer.name,
         entities: entities.drawnCount,
         tick: world.tick,
+        buffered: world.interpolation.bufferedFrames,
       },
       now,
     );

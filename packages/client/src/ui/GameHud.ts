@@ -25,6 +25,7 @@ export interface DebugStats {
   readonly rendererName: string;
   readonly entities: number;
   readonly tick: number;
+  readonly buffered: number;
 }
 
 /** How long an event line stays on screen before it is removed. */
@@ -45,12 +46,16 @@ export class GameHud {
   readonly #renderer = document.getElementById('stat-renderer');
   readonly #entities = document.getElementById('stat-entities');
   readonly #tick = document.getElementById('stat-tick');
+  readonly #buffered = document.getElementById('stat-buffered');
+  readonly #pending = document.getElementById('stat-pending');
+  readonly #corrections = document.getElementById('stat-corrections');
 
   readonly #netDot = document.getElementById('net-dot');
   readonly #netLabel = document.getElementById('net-label');
   readonly #eventLog = document.getElementById('event-log');
 
   #lastDebugUpdate = 0;
+  #lastPrediction = { pending: 0, corrections: 0, error: 0, largest: 0 };
   #lastHpText = '';
   #lastNetLabel = '';
 
@@ -103,9 +108,24 @@ export class GameHud {
   /*  Counters                                                                */
   /* ------------------------------------------------------------------------ */
 
-  setEntityCount(count: number, tick: number): void {
-    setText(this.#entities, String(count));
+  setEntityCount(count: number, tick: number, full = false): void {
+    setText(this.#entities, full ? `${String(count)} (full)` : String(count));
     setText(this.#tick, String(tick));
+  }
+
+  /** Interpolation buffer depth, refreshed with the debug panel's 4 Hz cadence. */
+  setBufferDepth(frames: number): void {
+    setText(this.#buffered, String(frames));
+  }
+
+  /** Prediction health: unacknowledged inputs, corrections and worst error. */
+  setPredictionStats(stats: {
+    pending: number;
+    corrections: number;
+    error: number;
+    largest: number;
+  }): void {
+    this.#lastPrediction = stats;
   }
 
   /** Throttled to ~4 Hz: DOM writes every frame would be wasted layout work. */
@@ -117,6 +137,14 @@ export class GameHud {
     setText(this.#zoom, `${stats.zoom.toFixed(2)}×`);
     setText(this.#camera, `${stats.cameraX.toFixed(0)}, ${stats.cameraY.toFixed(0)}`);
     setText(this.#renderer, stats.rendererName);
+    setText(this.#buffered, String(stats.buffered));
+    setText(this.#pending, String(this.#lastPrediction.pending));
+    setText(
+      this.#corrections,
+      this.#lastPrediction.corrections === 0
+        ? '0'
+        : `${String(this.#lastPrediction.corrections)} (max ${this.#lastPrediction.largest.toFixed(1)}u)`,
+    );
   }
 
   /* ------------------------------------------------------------------------ */

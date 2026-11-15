@@ -86,6 +86,24 @@ export class SpatialGrid {
     return bucket === undefined ? [] : [...bucket];
   }
 
+  /**
+   * Ids in an arbitrary set of cells, each id once.
+   *
+   * This is the AoI entry point: the interest radius spans more cells than a 3×3
+   * block, so the caller computes the cells (`gridCellsInRadius`) and this walks
+   * them. Dedupe matters because the radius walk can name the same wrapped cell
+   * twice on a small world.
+   */
+  idsInCells(cells: Iterable<GridCell>): readonly string[] {
+    const seen = new Set<string>();
+    for (const cell of cells) {
+      const bucket = this.#buckets.get(gridCellKey(cell));
+      if (bucket === undefined) continue;
+      for (const id of bucket) seen.add(id);
+    }
+    return [...seen];
+  }
+
   /** Ids in the cell plus its eight neighbours, with the torus applied. */
   idsInNeighbourhood(position: { x: number; y: number }): readonly string[] {
     const { col, row } = gridCellOf(position);

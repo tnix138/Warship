@@ -34,7 +34,7 @@ import {
   type ZoneDefinition,
   type ZoneId as ZoneIdType,
 } from './constants.js';
-import { UPGRADES, type HullStats, type UpgradeDefinition, type UpgradeId } from './upgrades.js';
+import { UPGRADES, type ShipStats, type UpgradeDefinition, type UpgradeId } from './upgrades.js';
 
 /* -------------------------------------------------------------------------- */
 /*  Small helpers                                                             */
@@ -318,10 +318,10 @@ export function availableUpgrades(owned: ReadonlyMap<UpgradeId, number>): readon
  * order of purchase irrelevant and prevents an upgrade tree from becoming
  * exponential. Flat effects are summed and applied after the percentages.
  */
-export function computeHullStats(
+export function computeShipStats(
   shipClass: ShipClass,
   upgrades: ReadonlyMap<UpgradeId, number> = new Map(),
-): HullStats {
+): ShipStats {
   const base = SHIP_CLASSES[shipClass];
 
   let hp = base.hp;

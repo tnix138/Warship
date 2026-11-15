@@ -21,7 +21,7 @@ import {
 import {
   angleDelta,
   availableUpgrades,
-  computeHullStats,
+  computeShipStats,
   damageAfterArmor,
   gridCellOf,
   gridCellKey,
@@ -371,9 +371,9 @@ describe('SHIP_CLASSES', () => {
   });
 });
 
-describe('computeHullStats', () => {
+describe('computeShipStats', () => {
   test('with no upgrades matches the class baseline', () => {
-    const stats = computeHullStats('normal');
+    const stats = computeShipStats('normal');
     const base = SHIP_CLASSES.normal;
     assert.equal(stats.maxHp, base.hp);
     assert.equal(stats.maxSpeed, base.speed);
@@ -383,24 +383,24 @@ describe('computeHullStats', () => {
 
   test('applies percent upgrades to the base value', () => {
     const base = SHIP_CLASSES.normal;
-    const stats = computeHullStats('normal', new Map([[UpgradeId.ReinforcedHull, 2]]));
+    const stats = computeShipStats('normal', new Map([[UpgradeId.ReinforcedHull, 2]]));
     assert.equal(stats.maxHp, Math.round(base.hp * 1.2));
   });
 
   test('applies flat armor upgrades', () => {
-    const stats = computeHullStats('normal', new Map([[UpgradeId.ArmorPlating, 3]]));
+    const stats = computeShipStats('normal', new Map([[UpgradeId.ArmorPlating, 3]]));
     assert.equal(stats.armor, 18);
   });
 
   test('purchase order does not matter', () => {
-    const a = computeHullStats(
+    const a = computeShipStats(
       'power',
       new Map([
         [UpgradeId.ReinforcedHull, 2],
         [UpgradeId.HeavyShells, 1],
       ]),
     );
-    const b = computeHullStats(
+    const b = computeShipStats(
       'power',
       new Map([
         [UpgradeId.HeavyShells, 1],
@@ -412,13 +412,13 @@ describe('computeHullStats', () => {
 
   test('caps at maxRank even if more ranks are supplied', () => {
     const base = SHIP_CLASSES.normal;
-    const stats = computeHullStats('normal', new Map([[UpgradeId.ReinforcedHull, 99]]));
+    const stats = computeShipStats('normal', new Map([[UpgradeId.ReinforcedHull, 99]]));
     assert.equal(stats.maxHp, Math.round(base.hp * (1 + 0.1 * 5)));
   });
 
   test('reload upgrades shorten reloadTime', () => {
     const base = SHIP_CLASSES.normal;
-    const stats = computeHullStats('normal', new Map([[UpgradeId.RapidLoader, 4]]));
+    const stats = computeShipStats('normal', new Map([[UpgradeId.RapidLoader, 4]]));
     assert.ok(stats.reloadTime < base.reloadTime);
   });
 });

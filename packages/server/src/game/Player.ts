@@ -3,9 +3,9 @@ import {
   STARTING_LEVEL,
   STARTING_SCRAP,
   STARTING_XP,
-  computeHullStats,
+  computeShipStats,
   zoneAt,
-  type HullStats,
+  type ShipStats,
   type InputFrame,
   type ShipClass,
   type SnapshotEntity,
@@ -73,7 +73,7 @@ export class Player {
     this.shipClass = options.shipClass ?? DEFAULT_SHIP_CLASS;
     this.displayName = options.displayName ?? options.id.slice(0, 8);
 
-    const stats = computeHullStats(this.shipClass);
+    const stats = computeShipStats(this.shipClass);
     this.maxHp = stats.maxHp;
     this.hp = stats.maxHp;
 
@@ -90,8 +90,8 @@ export class Player {
   }
 
   /** Effective stats, recomputed from class + purchased upgrades. */
-  get stats(): HullStats {
-    return computeHullStats(this.shipClass, this.upgrades);
+  get stats(): ShipStats {
+    return computeShipStats(this.shipClass, this.upgrades);
   }
 
   /** Zone is derived from position, never stored — it cannot go stale. */
