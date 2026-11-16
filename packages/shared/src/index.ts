@@ -12,3 +12,4 @@ export * from './protocol.js';
 export * from './upgrades.js';
 export * from './combat.js';
 export * from './formulas.js';
+export * from './flags.js';

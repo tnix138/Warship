@@ -5,7 +5,10 @@ import {
   BOX_PICKUP_RADIUS,
   BoxKind,
   MAX_LEVEL,
+  NPC_TIER_LEVEL,
+  MessageType,
   NpcTier,
+  ZoneId,
   RESPAWN_DELAY_S,
   TICK_DURATION_S,
   UPGRADES,
@@ -16,6 +19,7 @@ import {
 } from '@warship/shared';
 
 import { createAoiState } from './AoI.js';
+import { killReward } from './Combat.js';
 import { Loop } from './Loop.js';
 import { Npc } from './Npc.js';
 import { World } from './World.js';
@@ -194,6 +198,92 @@ describe('Loop — combat', () => {
 
     run(loop, 10);
     assert.equal(player.hp, shieldedHp, 'the shield must absorb everything');
+  });
+});
+
+describe('Loop — MVP progression pacing', () => {
+  test('a Coastal is worth enough that the first level lands quickly', () => {
+    /* The MVP bar for "the loop is visible": killing the weakest NPC in the safe zone
+       must reach level 2 in well under ten kills. It was twenty-five before the rewards
+       were re-tuned, which reads as a broken game in a two-minute playtest. */
+    const killer = new Npc({ id: 'n1', tier: NpcTier.Small, x: 4_000, y: 4_100 });
+    const perKill = killReward({
+      tier: NpcTier.Small,
+      baseXp: killer.stats.xp,
+      zone: ZoneId.Safe,
+      playerLevel: 1,
+      npcLevel: NPC_TIER_LEVEL[NpcTier.Small],
+    });
+
+    assert.ok(perKill > 0, 'a kill must be worth something');
+    const kills = Math.ceil(xpForLevel(2) / perKill);
+    assert.ok(kills <= 6, `level 2 should take at most 6 safe-zone kills, takes ${String(kills)}`);
+  });
+
+  test('the NPC level behind the gap penalty is its tier, not its reward', () => {
+    /* Regressing this put a Coastal at level 8, so a level-1 player was penalised 50%
+       for fighting the easiest enemy available — the reward curve was inverted for the
+       players who most needed it. */
+    assert.equal(NPC_TIER_LEVEL[NpcTier.Small], 1);
+    assert.ok(NPC_TIER_LEVEL[NpcTier.Medium] > NPC_TIER_LEVEL[NpcTier.Small]);
+    assert.ok(NPC_TIER_LEVEL[NpcTier.Large] > NPC_TIER_LEVEL[NpcTier.Medium]);
+  });
+
+  test('the kill event names the player who landed the last hit', () => {
+    const { world, loop, broadcast } = makeHarness();
+    const player = world.addPlayer({ id: 'p1', at: { x: 5_000, y: 5_000 } });
+    const npc = new Npc({ id: 'n9', tier: NpcTier.Small, x: 5_000, y: 5_100 });
+    world.npcs.set(npc.id, npc);
+
+    /* Bring it to one hit and fire: the killer must be attributed, or the client can
+       never say "you killed it" and the assist/kill split has nothing to split on. */
+    npc.applyDamage(npc.hp - 1);
+    player.acceptInput(
+      1,
+      { turn: 0, throttle: 0, aim: Math.PI / 2, firing: true },
+      performance.now(),
+    );
+
+    let ticks = 0;
+    while (npc.isAlive && ticks < 100) {
+      const aim = Math.atan2(npc.y - player.y, npc.x - player.x);
+      player.acceptInput(ticks + 2, { turn: 0, throttle: 0, aim, firing: true }, performance.now());
+      run(loop, 1);
+      ticks += 1;
+    }
+
+    assert.equal(npc.isAlive, false, 'the NPC should be dead');
+    /* Narrowed through a typed local rather than inline in the predicate: the union does
+       not resolve inside a callback under this config, and an `any` here would defeat the
+       point of the assertion. */
+    const events = broadcast.filter(
+      (message): message is Extract<ServerMessage, { t: typeof MessageType.EVENT }> =>
+        message.t === MessageType.EVENT,
+    );
+    const kill = events.find(
+      (message) => message.kind === 'kill' && message.data?.victimId === 'n9',
+    );
+
+    assert.notEqual(kill, undefined, 'a kill event must be emitted');
+    assert.equal(kill?.data?.killerId, 'p1', 'and it must name the killer');
+  });
+
+  test('a level-up buys an upgrade that changes the hull', () => {
+    /* The whole MVP power curve in one test: kill → XP → level → point → upgrade →
+       visibly different ship. If any link breaks, this fails. */
+    const { world, loop } = makeHarness();
+    const player = world.addPlayer({ id: 'p1', at: { x: 6_000, y: 6_000 } });
+    const hpBefore = player.maxHp;
+
+    player.xp = xpForLevel(2) - 1;
+    const npc = new Npc({ id: 'n8', tier: NpcTier.Small, x: 6_000, y: 6_100 });
+    world.npcs.set(npc.id, npc);
+    npc.applyDamage(9_999);
+    run(loop, 2);
+
+    assert.ok(player.upgradePoints > 0, 'levelling grants a point');
+    assert.equal(loop.purchaseUpgrade(player, UpgradeId.ReinforcedHull), 1);
+    assert.ok(player.maxHp > hpBefore, 'the purchased hull must be better');
   });
 });
 

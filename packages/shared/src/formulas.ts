@@ -35,7 +35,13 @@ import {
   type ZoneDefinition,
   type ZoneId as ZoneIdType,
 } from './constants.js';
-import { UPGRADES, type ShipStats, type UpgradeDefinition, type UpgradeId } from './upgrades.js';
+import {
+  MVP_UPGRADE_IDS,
+  UPGRADES,
+  type ShipStats,
+  type UpgradeDefinition,
+  type UpgradeId,
+} from './upgrades.js';
 
 /* -------------------------------------------------------------------------- */
 /*  Small helpers                                                             */
@@ -303,8 +309,13 @@ export function upgradeCost(upgradeId: UpgradeId, currentLevel: number): number 
 }
 
 /** Which upgrade ids are purchasable right now, given what the player owns. */
-export function availableUpgrades(owned: ReadonlyMap<UpgradeId, number>): readonly UpgradeId[] {
-  return (Object.keys(UPGRADES) as UpgradeId[]).filter((id) => {
+export function availableUpgrades(
+  owned: ReadonlyMap<UpgradeId, number>,
+  pool: readonly UpgradeId[] = MVP_UPGRADE_IDS,
+): readonly UpgradeId[] {
+  /* The `pool` argument is what keeps the MVP tree honest: an upgrade that is not in it
+     can never be offered, so the picker and the server agree by construction. */
+  return pool.filter((id) => {
     const definition = UPGRADES[id];
     const rank = owned.get(id) ?? 0;
     if (rank >= definition.maxRank) return false;

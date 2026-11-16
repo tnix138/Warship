@@ -17,7 +17,9 @@ import {
   CloseCode,
   NETWORK_MAX_MESSAGES_PER_SECOND,
   MessageType,
+  MVP_FLAGS,
   PROTOCOL_VERSION,
+  resetFeatures,
   ShipClass,
   TICK_DURATION_MS,
   WS_SUBPROTOCOL,
@@ -688,7 +690,23 @@ async function withAoiServer(
   }
 }
 
+/**
+ * Area-of-interest culling, enabled explicitly.
+ *
+ * The MVP ships with `interestManagement` off and sends full snapshots to everyone, so
+ * without this hook these tests would be asserting behaviour the game no longer has.
+ * The subsystem is not deleted — it still runs when the flag is on — and keeping its
+ * tests green is what makes turning the flag back on a one-line change rather than a
+ * rewrite.
+ */
 describe('Area of Interest', { concurrency: 1 }, () => {
+  before(() => {
+    MVP_FLAGS.interestManagement = true;
+  });
+  after(() => {
+    resetFeatures();
+  });
+
   test('two players far apart never see each other', async () => {
     await withAoiServer(async ({ port, tick, move, resetAoi }) => {
       /* Two ships are placed at the world's true antipodes.

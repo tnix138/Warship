@@ -166,6 +166,42 @@ export class ClientWorld {
   }
 
   /**
+   * What the renderer should draw, straight from the newest snapshot.
+   *
+   * This is the MVP path: no interpolation buffer, no prediction, no easing. Every
+   * entity is drawn at the pose the server last sent, so remote ships step at 20 Hz and
+   * the local ship is one tick behind its input. Both are visible; both are acceptable
+   * while the goal is "you can play it", and `MVP_FLAGS` is where that judgement lives.
+   *
+   * Kept as a separate method rather than a branch inside `renderEntities` so the
+   * simplicity is obvious to a reader of the call site.
+   */
+  renderEntitiesNow(): RenderEntity[] {
+    const out: RenderEntity[] = [];
+
+    for (const entity of this.entities.values()) {
+      const isSelf = entity.id === this.selfId;
+
+      out.push({
+        id: entity.id,
+        x: entity.x,
+        y: entity.y,
+        rotation: entity.rotation,
+        hp: entity.hp,
+        shipClass: entity.shipClass,
+        alpha: 1,
+        isSelf,
+        kind: entity.kind,
+        ...(entity.npcTier === undefined ? {} : { npcTier: entity.npcTier }),
+        ...(entity.boxKind === undefined ? {} : { boxKind: entity.boxKind }),
+        shield: entity.shield,
+      });
+    }
+
+    return out;
+  }
+
+  /**
    * What the renderer should draw at `now`.
    *
    * Interpolated poses for everyone, with the local player's pose overridden by the

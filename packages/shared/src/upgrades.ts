@@ -100,6 +100,22 @@ export type UpgradeId = (typeof UpgradeId)[keyof typeof UpgradeId];
 /*  The MVP tech tree                                                         */
 /* -------------------------------------------------------------------------- */
 
+/**
+ * Upgrades the MVP actually offers: speed, damage, hull.
+ *
+ * The rest of the tree — armour, turn rate, reload, range, the spotter plane — is kept
+ * and still correct; it is simply not offered. Three one-line upgrades are enough to
+ * prove "kill things, get stronger, kill bigger things", and a picker with three
+ * mutually exclusive choices is far easier to reason about while the game is still
+ * being made playable. Widening this list is the only change needed to restore the
+ * full tree.
+ */
+export const MVP_UPGRADE_IDS: readonly UpgradeId[] = [
+  UpgradeId.ReinforcedHull,
+  UpgradeId.MarineBoiler,
+  UpgradeId.HeavyShells,
+];
+
 export const UPGRADES: Readonly<Record<UpgradeId, UpgradeDefinition>> = {
   [UpgradeId.ReinforcedHull]: {
     id: UpgradeId.ReinforcedHull,
@@ -171,7 +187,9 @@ export const UPGRADES: Readonly<Record<UpgradeId, UpgradeDefinition>> = {
     costGrowth: 1.55,
     stat: UpgradeStat.Damage,
     effect: { kind: 'percent', factor: 0.12 },
-    requires: [UpgradeId.RapidLoader],
+    /* Ungated for the MVP: its old requirement (`Rapid Loader`) is no longer offered,
+       so leaving the gate would make the damage upgrade unreachable forever. */
+    requires: [],
   },
   [UpgradeId.ExtendedRange]: {
     id: UpgradeId.ExtendedRange,

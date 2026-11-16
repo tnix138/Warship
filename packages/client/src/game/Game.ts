@@ -2,6 +2,7 @@ import { Application } from 'pixi.js';
 
 import {
   CLIENT_INPUT_RATE,
+  MVP_FLAGS,
   computeShipStats,
   RENDER_BACKGROUND_COLOR,
   RENDER_MAX_DPR,
@@ -27,14 +28,15 @@ import { GameHud } from '../ui/GameHud';
 /**
  * The client game.
  *
- * Once per frame:
+ * The MVP path is deliberately short. Once per frame:
  *
  *   input (WASD + pointer) ──20 Hz──▶ INPUT frames ──▶ server
- *   server ──20 Hz──▶ SNAPSHOT ──▶ ClientWorld ──▶ EntityRenderer ──▶ screen
+ *   server ──20 Hz──▶ SNAPSHOT ──▶ ClientWorld ──▶ renderers ──▶ screen
  *
- * The client never simulates movement. It renders whatever the latest snapshot said,
- * which is exactly the "no interpolation, no prediction" scope of this milestone;
- * the camera eases toward the local ship so a 20 Hz feed still reads smoothly.
+ * There is no prediction and no interpolation: every ship is drawn where the last
+ * snapshot said it was, and the camera eases toward it. That is a conscious trade —
+ * see `MVP_FLAGS` — and both subsystems still exist behind their flags for when the
+ * game is playable enough to deserve them.
  */
 
 export interface GameOptions {
@@ -73,11 +75,17 @@ export async function createGame(options: GameOptions): Promise<Game> {
 
   app.stage.addChild(ocean.view, camera.world);
 
-  /* Sea marks, wake and grid live in world space, beneath the ships. They are what
-     make movement legible: the tiling water is screen-space and identical everywhere,
-     so without fixed landmarks a moving ship looks stationary. */
-  const worldObjects = new WorldObjects();
-  camera.world.addChild(worldObjects.view);
+  /* Parallax off: the water is a still colour. */
+  if (!MVP_FLAGS.worldDecoration) ocean.freeze();
+
+  /* Sea marks, wake and grid: off in the MVP. They exist to make speed legible, but
+     the water is a still colour without the parallax that gave them something to move
+     against, so they would be decoration on decoration. */
+  let worldObjects: WorldObjects | null = null;
+  if (MVP_FLAGS.worldDecoration) {
+    worldObjects = new WorldObjects();
+    camera.world.addChild(worldObjects.view);
+  }
 
   const entities = new EntityRenderer(textures);
   camera.world.addChild(entities.view);
@@ -110,7 +118,7 @@ export async function createGame(options: GameOptions): Promise<Game> {
 
         /* A fatal close (protocol mismatch, server full) must be shown verbatim:
            the ship controls silently stop working otherwise, which looks exactly
-           like the input bug we just fixed. */
+           like an input bug. */
         const fatal = connection.fatalReason;
         if (fatal !== null) hud.setConnectionError(fatal);
       },
@@ -118,7 +126,7 @@ export async function createGame(options: GameOptions): Promise<Game> {
         hud.setServerInfo(welcome);
         if (joined) return;
         joined = true;
-        // The socket is live and the server has spoken v2: ask to enter the world.
+        // The socket is live and the server has spoken: ask to enter the world.
         connection.join(options.shipClass ?? ShipClass.Normal);
       },
       onPlayerState: (state) => {
@@ -132,36 +140,40 @@ export async function createGame(options: GameOptions): Promise<Game> {
 
         // Prediction must integrate with exactly the server's numbers, or the two
         // drift apart and every reconciliation becomes a correction.
-        prediction.setStats({
-          maxSpeed: computeShipStats(state.shipClass).maxSpeed,
-          turnRate: computeShipStats(state.shipClass).turnRate,
-        });
+        if (MVP_FLAGS.prediction) {
+          prediction.setStats({
+            maxSpeed: computeShipStats(state.shipClass).maxSpeed,
+            turnRate: computeShipStats(state.shipClass).turnRate,
+          });
+        }
       },
       onSnapshot: (snapshot: SnapshotMessage) => {
         world.applySnapshot(snapshot);
 
-        /* Reconcile prediction against the authority. `ackSeq` rides on our own
-           entity, so it arrives exactly once per snapshot. */
-        const self = world.self;
-        if (self !== undefined) {
-          const result = prediction.reconcile(
-            { x: self.x, y: self.y, rotation: self.rotation },
-            self.ackSeq ?? 0,
-          );
-          hud.setPredictionStats({
-            pending: prediction.pendingCount,
-            corrections: prediction.correctionCount,
-            error: result.error,
-            largest: prediction.largestCorrection,
-            recent: prediction.recentCorrections,
-            buffered: world.interpolation.bufferedFrames,
-            delayMs: world.interpolation.delayMs,
-            correcting: prediction.correcting,
-            offset: prediction.offset,
-            offsetRotation: prediction.offsetRotation,
-            maxOffset: prediction.maxOffset,
-            easeTau: prediction.easeTau,
-          });
+        if (MVP_FLAGS.prediction) {
+          /* Reconcile prediction against the authority. `ackSeq` rides on our own
+             entity, so it arrives exactly once per snapshot. */
+          const self = world.self;
+          if (self !== undefined) {
+            const result = prediction.reconcile(
+              { x: self.x, y: self.y, rotation: self.rotation },
+              self.ackSeq ?? 0,
+            );
+            hud.setPredictionStats({
+              pending: prediction.pendingCount,
+              corrections: prediction.correctionCount,
+              error: result.error,
+              largest: prediction.largestCorrection,
+              recent: prediction.recentCorrections,
+              buffered: world.interpolation.bufferedFrames,
+              delayMs: world.interpolation.delayMs,
+              correcting: prediction.correcting,
+              offset: prediction.offset,
+              offsetRotation: prediction.offsetRotation,
+              maxOffset: prediction.maxOffset,
+              easeTau: prediction.easeTau,
+            });
+          }
         }
 
         hud.setEntityCount(world.size, snapshot.tick, snapshot.full);
@@ -206,7 +218,6 @@ export async function createGame(options: GameOptions): Promise<Game> {
     const now = performance.now();
     const deltaMS = Math.min(now - lastNow, 250); // clamp after a background tab
     lastNow = now;
-    const deltaS = deltaMS / 1000;
 
     /* Viewport: the window can resize at any time. */
     const width = app.screen.width;
@@ -218,19 +229,14 @@ export async function createGame(options: GameOptions): Promise<Game> {
        ticks down smoothly. Each frame we step it, and the next authoritative state
        re-anchors it, so a dropped packet cannot leave it stuck. */
     if (lastSelf?.dead === true) {
-      deadForS += deltaS;
-      const remaining = Math.max(0, (lastSelf.respawnInS ?? 0) - deadForS);
-      hud.updateDeathCountdown(remaining);
+      deadForS += deltaMS / 1000;
+      hud.updateDeathCountdown(Math.max(0, (lastSelf.respawnInS ?? 0) - deadForS));
     }
 
     /* Input: sample the devices, ship at most one INPUT frame per tick. */
-    inputAccumulator += deltaS;
+    inputAccumulator += Math.min(deltaMS / 1000, 0.25);
     if (inputAccumulator > inputIntervalS * 4) inputAccumulator = inputIntervalS * 4;
 
-    /* At most one INPUT frame per 50 ms, exactly as before — but the *prediction* is
-       no longer stepped here. It runs on its own fixed clock in `prediction.update`
-       below, once per rendered frame, so the local ship moves every frame instead of
-       jumping 20 times a second. */
     let sampledFrame: InputFrame | null = null;
     let sampledSeq = sequence;
 
@@ -244,35 +250,37 @@ export async function createGame(options: GameOptions): Promise<Game> {
       hud.setInputState(sampledFrame, sequence);
     }
 
-    /* Prediction: advance on the server's 20 Hz tick, then blend across it so the
-       ship is drawn at the frame rate. Doing this per frame — rather than per input —
-       is what removes the 20 Hz stutter of the player's own ship. */
-    prediction.update(deltaS, sampledFrame, sampledSeq);
+    /* Prediction: off in the MVP, so the local ship is drawn where the server says it
+       is. The camera still follows it, which is what keeps input feeling connected
+       even though the pose is one tick old. */
+    if (MVP_FLAGS.prediction) {
+      prediction.update(Math.min(deltaMS / 1000, 0.25), sampledFrame, sampledSeq);
+    }
 
-    /* Camera: follow the *predicted* ship, which is where the player believes they
-       are; following the authoritative pose would lag one round-trip behind. */
     const authoritative = world.self;
-    const predicted = prediction.ready
-      ? { x: prediction.actor.x, y: prediction.actor.y }
-      : authoritative;
+    const focus = MVP_FLAGS.prediction && prediction.ready ? prediction.actor : authoritative;
 
-    if (predicted !== undefined) {
-      if (Math.hypot(camera.x - predicted.x, camera.y - predicted.y) > CAMERA_SNAP_DISTANCE) {
-        camera.focusOn(predicted.x, predicted.y);
+    if (focus !== undefined && lastSelf?.dead !== true) {
+      if (Math.hypot(camera.x - focus.x, camera.y - focus.y) > CAMERA_SNAP_DISTANCE) {
+        camera.focusOn(focus.x, focus.y);
       } else {
-        camera.follow(predicted.x, predicted.y, deltaS);
+        camera.follow(focus.x, focus.y, Math.min(deltaMS / 1000, 0.25));
       }
     }
 
-    /* World feel: draw only what is on screen. */
-    worldObjects.update(now, camera.viewport, prediction.ready ? prediction.actor : null);
+    /* World feel: off in the MVP. */
+    worldObjects?.update(now, camera.viewport, MVP_FLAGS.prediction ? prediction.actor : null);
 
-    /* Draw: interpolated poses for everyone else, predicted pose for us. */
-    const renderList = world.renderEntities(now, prediction.ready ? prediction.actor : undefined);
+    /* Draw: interpolated poses when enabled, otherwise the last snapshot verbatim. */
+    const renderList = MVP_FLAGS.prediction
+      ? world.renderEntities(now, prediction.actor)
+      : world.renderEntitiesNow();
     entities.update(renderList, now);
     combat.update(renderList, now);
-    /* Feed the ship's speed so the surface streams past in proportion to travel. */
-    ocean.update(deltaMS, prediction.ready ? Math.abs(prediction.actor.speed) : 0);
+    /* Feed the ship's speed so the surface streams past in proportion to travel. With
+       decoration off the parallax is stilled below, so this is a no-op. */
+    ocean.update(deltaMS, 0);
+
     hud.updateDebug(
       {
         fps: app.ticker.FPS,
@@ -282,7 +290,7 @@ export async function createGame(options: GameOptions): Promise<Game> {
         rendererName: app.renderer.name,
         entities: entities.drawnCount + combat.drawnCount,
         tick: world.tick,
-        buffered: world.interpolation.bufferedFrames,
+        buffered: MVP_FLAGS.interpolation ? world.interpolation.bufferedFrames : 0,
       },
       now,
     );
@@ -299,7 +307,7 @@ export async function createGame(options: GameOptions): Promise<Game> {
       input.destroy();
       entities.destroy();
       combat.destroy();
-      worldObjects.destroy();
+      worldObjects?.destroy();
       hud.destroy();
       app.destroy(true, { children: true });
     },

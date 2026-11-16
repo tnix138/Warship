@@ -53,6 +53,19 @@ export const NPC_TIER_NAMES: Readonly<Record<NpcTier, string>> = {
   [NpcTier.Large]: 'Warship',
 };
 
+/**
+ * The level a tier is balanced against, for the XP level-gap penalty.
+ *
+ * The tier is the challenge rating: a Coastal is an even fight for a starting ship, a
+ * Raider wants a few upgrades, and a Warship is a mid-game target. Anything derived
+ * from the reward value instead inverts the curve (see `#onNpcKilled`).
+ */
+export const NPC_TIER_LEVEL: Readonly<Record<NpcTier, number>> = {
+  [NpcTier.Small]: 1,
+  [NpcTier.Medium]: 5,
+  [NpcTier.Large]: 12,
+};
+
 /** Hull colour per tier, so the client and the debug panel agree with the docs. */
 export const NPC_TIER_COLORS: Readonly<Record<NpcTier, number>> = {
   [NpcTier.Small]: 0x5cc98a,
@@ -91,21 +104,29 @@ export const NPC_STATS: Readonly<Record<NpcTier, NpcStats>> = {
     tier: NpcTier.Small,
     displayName: 'Coastal',
     maxHp: 60,
-    damage: 6,
+    damage: 14,
     maxSpeed: 150,
     turnRate: 1.4,
     range: 430,
+    /* MVP pacing: a Coastal that does 6 damage every 1.1 s takes a full minute to sink
+       a light cruiser, so a playtest ends with the player wondering whether NPCs shoot
+       at all. The threat has to be legible within one engagement. */
     reloadTime: 1.1,
     radius: 16,
     detectRadius: 800,
     color: NPC_TIER_COLORS[NpcTier.Small],
-    xp: 8,
+    /* MVP pacing. The original values were tuned for a long session: 8 XP against a
+       100-XP first level is twelve and a half kills before anything happens, which reads
+       as "the game does nothing" in a two-minute playtest. These are set so a first
+       level-up lands after three or four kills — the loop is meant to be *seen* working
+       before it is tuned. */
+    xp: 60,
   },
   [NpcTier.Medium]: {
     tier: NpcTier.Medium,
     displayName: 'Raider',
     maxHp: 140,
-    damage: 12,
+    damage: 22,
     maxSpeed: 195,
     turnRate: 1.6,
     range: 620,
@@ -113,13 +134,13 @@ export const NPC_STATS: Readonly<Record<NpcTier, NpcStats>> = {
     radius: 20,
     detectRadius: 900,
     color: NPC_TIER_COLORS[NpcTier.Medium],
-    xp: 24,
+    xp: 90,
   },
   [NpcTier.Large]: {
     tier: NpcTier.Large,
     displayName: 'Warship',
     maxHp: 320,
-    damage: 22,
+    damage: 34,
     maxSpeed: 165,
     turnRate: 1.2,
     range: 850,
@@ -127,7 +148,7 @@ export const NPC_STATS: Readonly<Record<NpcTier, NpcStats>> = {
     radius: 26,
     detectRadius: 1_000,
     color: NPC_TIER_COLORS[NpcTier.Large],
-    xp: 70,
+    xp: 240,
   },
 } as const;
 

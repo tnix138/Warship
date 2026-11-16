@@ -1,4 +1,5 @@
 import {
+  MVP_FLAGS,
   PING_GOOD_MS,
   PING_WARN_MS,
   SHIP_CLASSES,
@@ -100,6 +101,16 @@ export class GameHud {
 
   #maxHp = 1;
   #hp = 1;
+
+  constructor() {
+    /* Hide rather than omit: the markup stays for when `advancedDebug` is switched back
+       on, and the panel does not render empty rows in the meantime. */
+    if (!MVP_FLAGS.advancedDebug) {
+      for (const row of document.querySelectorAll('.debug__row--adv')) {
+        (row as HTMLElement).hidden = true;
+      }
+    }
+  }
 
   /* ------------------------------------------------------------------------ */
   /*  Connection status                                                       */
@@ -307,6 +318,13 @@ export class GameHud {
     this.#lastDebugUpdate = now;
 
     setText(this.#fps, stats.fps.toFixed(0));
+
+    /* MVP: fps, entities and tick are the whole panel. Every row below this point
+       describes a subsystem that is switched off, and a debug readout for something
+       that cannot happen is worse than no readout — it invites "the buffer is 0, is
+       that a bug?" when the answer is "there is no buffer". */
+    if (!MVP_FLAGS.advancedDebug) return;
+
     setText(this.#zoom, `${stats.zoom.toFixed(2)}×`);
     setText(this.#camera, `${stats.cameraX.toFixed(0)}, ${stats.cameraY.toFixed(0)}`);
     setText(this.#renderer, stats.rendererName);

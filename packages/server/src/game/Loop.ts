@@ -26,6 +26,8 @@ import {
   type ServerMessage,
   type SnapshotMessage,
   type SnapshotEntity,
+  MVP_FLAGS,
+  NPC_TIER_LEVEL,
   type UpgradeId,
 } from '@warship/shared';
 
@@ -71,6 +73,9 @@ export interface LoopOptions {
 export class Loop {
   readonly #world: World;
   readonly #log: Logger;
+
+  /** Player id that last damaged each NPC, for kill attribution. */
+  readonly #lastNpcAttacker = new Map<string, string | null>();
   readonly #send: LoopOptions['send'];
   readonly #broadcast: LoopOptions['broadcast'];
   /** Per-player AoI memory (what each client currently believes exists). */
@@ -257,6 +262,11 @@ export class Loop {
       if (npc !== undefined) {
         const dealt = npc.applyDamage(hit.damage);
         if (dealt > 0) {
+          /* Remember who last drew blood. Attribution is only needed at the moment of
+             death, and the alternative — threading an owner through the projectile and
+             out the other side of `resolveHits` — is more machinery than one string
+             per NPC. Last hit wins, which is the simplest rule a player will accept. */
+          this.#lastNpcAttacker.set(npc.id, projectile?.ownerId ?? null);
           this.#broadcast({
             v: PROTOCOL_VERSION,
             t: MessageType.EVENT,
@@ -353,10 +363,13 @@ export class Loop {
   #onNpcKilled(npc: Npc, tick: number): void {
     const zone = zoneAt({ x: npc.x, y: npc.y });
 
-    /* The killer is not tracked through the projectile chain here: attributing a kill is
-       a PvP concern, and an NPC has no owner. Every player within AoI interest of the
-       wreck gets the reward, which for NPC combat is the same thing and needs no
-       ownership bookkeeping. */
+    /* The last player to damage the wreck gets the reward; anyone else within interest
+       range gets a share. Paying only the killer would make a two-player fight worse
+       than two solo fights, and paying everyone in the *world* would make proximity
+       irrelevant. */
+    const killerId = this.#lastNpcAttacker.get(npc.id) ?? null;
+    this.#lastNpcAttacker.delete(npc.id);
+
     for (const player of this.#world.allPlayers()) {
       if (!player.isAlive) continue;
 
@@ -368,10 +381,17 @@ export class Loop {
         baseXp: npc.stats.xp,
         zone,
         playerLevel: levelFromXp(player.xp),
-        npcLevel: levelFromXp(npc.stats.xp * 40),
+        /* The tier *is* the challenge level. Deriving one from the XP value
+           (`levelFromXp(xp * 40)`) put a Coastal at level 8, so a level-1 player took a
+           50% level-gap penalty for fighting the weakest enemy in the game — the reward
+           curve was inverted for exactly the players who needed it most. */
+        npcLevel: NPC_TIER_LEVEL[npc.tier],
       });
 
-      this.#grantXp(player, earned, tick);
+      /* Assist pay is a fraction, so the killer is always the best-rewarded participant
+         and the incentive to land the final blow survives. */
+      const credit = player.id === killerId ? 1 : 0.5;
+      this.#grantXp(player, Math.round(earned * credit), tick);
     }
 
     for (const drop of lootForKill({ tier: npc.tier, x: npc.x, y: npc.y, sourceId: npc.id })) {
@@ -402,7 +422,7 @@ export class Loop {
       tick,
       kind: EventKind.Kill,
       entityId: npc.id,
-      data: { victimId: npc.id, npcTier: npc.tier },
+      data: { victimId: npc.id, npcTier: npc.tier, ...(killerId === null ? {} : { killerId }) },
     });
   }
 
@@ -663,6 +683,31 @@ export class Loop {
     for (const box of world.boxes) {
       const live = this.#boxRecord(box.id);
       if (live !== null) consider(roundEntity(live));
+    }
+
+    /* MVP path: one full frame, every entity, every viewer.
+       `MVP_FLAGS.interestManagement` off means no grid walk, no AoI memory and no delta
+       diff — the loop simply sends the world. At this scale a full frame is a few KB per
+       tick, and the trade is deliberate: an entire class of "why can't I see it" bugs
+       stops existing. The AoI path below is untouched and still runs when the flag is
+       on. */
+    if (!MVP_FLAGS.interestManagement) {
+      for (const viewer of world.players) {
+        const own = records.get(viewer.id);
+        if (own !== undefined) {
+          records.set(viewer.id, { ...own, ackSeq: viewer.lastInputSeq });
+        }
+
+        this.#send(viewer.id, {
+          v: PROTOCOL_VERSION,
+          t: MessageType.SNAPSHOT,
+          tick,
+          serverTime: Date.now(),
+          full: true,
+          entities: [...records.values()],
+        });
+      }
+      return;
     }
 
     for (const viewer of world.players) {

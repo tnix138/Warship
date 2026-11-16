@@ -41,7 +41,7 @@ import {
   zoneAt,
   zoneMultiplier,
 } from './formulas.js';
-import { UpgradeId } from './upgrades.js';
+import { MVP_UPGRADE_IDS, UPGRADES, UpgradeId } from './upgrades.js';
 
 /* -------------------------------------------------------------------------- */
 /*  xpForLevel                                                                */
@@ -474,13 +474,33 @@ describe('availableUpgrades', () => {
   });
 
   test('unlocks a child once its requirement is owned', () => {
-    const available = availableUpgrades(new Map([[UpgradeId.ReinforcedHull, 1]]));
-    assert.ok(available.includes(UpgradeId.ArmorPlating));
+    /* Passed the full tree explicitly: the default pool is the MVP's three upgrades,
+       and the prerequisite mechanic belongs to the tree, not to which subset is
+       currently offered. */
+    const fullTree = Object.keys(UPGRADES) as UpgradeId[];
+    const locked = availableUpgrades(new Map(), fullTree);
+    assert.ok(!locked.includes(UpgradeId.ArmorPlating), 'gated before its parent');
+
+    const unlocked = availableUpgrades(new Map([[UpgradeId.ReinforcedHull, 1]]), fullTree);
+    assert.ok(unlocked.includes(UpgradeId.ArmorPlating));
   });
 
   test('drops a node once it is maxed out', () => {
-    const available = availableUpgrades(new Map([[UpgradeId.SteeringGear, 3]]));
+    const fullTree = Object.keys(UPGRADES) as UpgradeId[];
+    const available = availableUpgrades(new Map([[UpgradeId.SteeringGear, 3]]), fullTree);
     assert.ok(!available.includes(UpgradeId.SteeringGear));
+  });
+
+  test('the MVP pool offers exactly hull, speed and damage', () => {
+    /* Pinned because this is a scope decision, not an accident: three upgrades are
+       enough to prove the progression loop, and a wider picker is easy to restore by
+       changing `MVP_UPGRADE_IDS`. */
+    assert.deepEqual([...MVP_UPGRADE_IDS].sort(), [
+      UpgradeId.HeavyShells,
+      UpgradeId.MarineBoiler,
+      UpgradeId.ReinforcedHull,
+    ]);
+    assert.deepEqual([...availableUpgrades(new Map())].sort(), [...MVP_UPGRADE_IDS].sort());
   });
 });
 

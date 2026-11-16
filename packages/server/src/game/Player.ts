@@ -1,3 +1,5 @@
+import { MVP_FLAGS } from '@warship/shared';
+
 import { statsForTier } from './Combat.js';
 import { hullTierForLevel, hullTierMultiplier } from './Progression.js';
 import {
@@ -116,6 +118,10 @@ export class Player {
     const base = computeShipStats(this.shipClass, this.upgrades);
     /* Hull tier compounds everything the upgrade tree did. Applied here rather than in
        every caller so there is one place where "what this ship can do" is decided. */
+    /* `MVP_FLAGS.hullTiers` off means a level-40 hull is a level-1 hull: the only power
+       curve is the upgrades the player buys, which is far easier to reason about while
+       the game is still being made playable. */
+    if (!MVP_FLAGS.hullTiers) return base;
     return statsForTier(base, hullTierMultiplier(hullTierForLevel(levelFromXp(this.xp))));
   }
 

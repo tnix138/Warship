@@ -22,6 +22,9 @@ export class Ocean {
   readonly view = new Container();
 
   readonly #far: TilingSprite;
+  /** Set by `freeze()`; see the note there. */
+  #frozen = false;
+
   readonly #near: TilingSprite;
   readonly #glint: Graphics;
 
@@ -77,7 +80,23 @@ export class Ocean {
    * flank speed — which is exactly how a static ocean reads, regardless of how nicely
    * the texture animates.
    */
+  /**
+   * Stop the water dead.
+   *
+   * The MVP keeps the ocean as a still colour: the parallax exists to sell motion, and
+   * against buoys and a grid — both switched off — moving water with nothing to move
+   * against just looks like a bug in the texture. `freeze` is a flag on the instance
+   * rather than a zero delta so the caller cannot accidentally un-freeze it by passing
+   * a speed.
+   */
+  freeze(): void {
+    this.#frozen = true;
+    this.#near.tilePosition.set(0, 0);
+    this.#far.tilePosition.set(0, 0);
+  }
+
   update(deltaMS: number, shipSpeed = 0): void {
+    if (this.#frozen) return;
     const dt = deltaMS / 1000;
     const travel = shipSpeed * RENDER_WATER_PARALLAX;
 
