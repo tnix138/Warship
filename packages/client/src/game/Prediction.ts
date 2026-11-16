@@ -117,12 +117,14 @@ const MAX_FRAME_DELTA_S = 0.05;
 const CORRECTION_EPSILON = 0.01;
 
 /**
- * Correction hysteresis: a correction is only started above this distance.
+ * Distance beyond which a correction is snapped rather than eased.
  *
- * Without a dead zone, the constant tiny disagreement between two floating-point
- * integrations of the same physics tick-tock-s the ship forever.
+ * The genuinely large disagreements are teleports — respawn, reconnect, a long packet
+ * loss — and easing one drags the ship across the screen. Everything below this is real
+ * drift and eases out; measured worst-case drift at the frame level is ~5 units, so 16
+ * carries roughly a 3x margin over anything the player can actually produce.
  */
-const DEFAULT_SNAP_THRESHOLD = 64;
+const DEFAULT_SNAP_THRESHOLD = 16;
 const DEFAULT_MAX_PENDING = 64;
 
 export class Prediction {

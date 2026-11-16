@@ -229,9 +229,11 @@ describe('Prediction — reconciliation policy', () => {
     const prediction = new Prediction({}, { stats: STATS });
     prediction.reconcile({ x: 0, y: 0, rotation: 0 }, 0);
 
-    // 50 units is under the 64 u snap threshold; 500 is a teleport.
-    const small = prediction.reconcile({ x: 50, y: 0, rotation: 0 }, 0);
-    assert.equal(small.corrected, false, '50 u should still be eased');
+    /* 12 units is drift — it must ease. 5 000 is a respawn-class teleport and must snap.
+       The threshold sits at 16, comfortably above the ~5 units of worst-case drift
+       measured at the frame level. */
+    const small = prediction.reconcile({ x: 12, y: 0, rotation: 0 }, 0);
+    assert.equal(small.corrected, false, '12 u should still be eased');
 
     const large = prediction.reconcile({ x: 5_000, y: 0, rotation: 0 }, 0);
     assert.equal(large.corrected, true, 'a 5000 u jump must snap');

@@ -15,7 +15,8 @@
  *    `@warship/shared` never takes a runtime dependency.
  */
 
-import type { PROTOCOL_VERSION, ShipClass, ZoneId } from './constants.js';
+import type { PROTOCOL_VERSION, NpcTier, ShipClass, ZoneId } from './constants.js';
+import type { BoxKind, EntityKind } from './combat.js';
 import type { UpgradeId } from './upgrades.js';
 
 /* -------------------------------------------------------------------------- */
@@ -117,6 +118,20 @@ export interface SnapshotEntity {
   /** Current hull points. Always >= 0. */
   readonly hp: number;
   /**
+   * What this record is: a player, an NPC, a projectile or a box.
+   *
+   * Optional for the same reason `shipClass` is: a delta only re-states what changed.
+   * Always present on a full snapshot and on an entity's first appearance, so the client
+   * can classify an id exactly once and remember.
+   */
+  readonly kind?: EntityKind;
+  /** NPC tier, so the client can pick a colour and the HP bar scale. NPC records only. */
+  readonly npcTier?: NpcTier;
+  /** Box payload kind. Box records only. */
+  readonly boxKind?: BoxKind;
+  /** Shield remaining in seconds; non-zero means the hull is invulnerable. */
+  readonly shield?: number;
+  /**
    * Ship class, so the client can pick a sprite without a second lookup.
    *
    * Optional on the wire because a *delta* snapshot only re-states fields that
@@ -170,8 +185,13 @@ export interface JoinMessage extends MessageBase {
   t: typeof MessageType.JOIN;
   /** Desired ship class. The server may override it (validation, capacity). */
   shipClass: ShipClass;
-  /** Client build info; makes stale-tab-vs-fresh-server debugging trivial. */
-  client: {
+  /**
+   * Client build info; makes stale-tab-vs-fresh-server debugging trivial.
+   *
+   * Optional because it is *wire* data: a client that omits it is doing nothing wrong
+   * that justifies dropping the connection, and the server must read it defensively.
+   */
+  client?: {
     version: string;
     /** Resume ticket from a previous `WELCOME` — reserved, unused in the MVP. */
     ticket?: string;
@@ -287,6 +307,16 @@ export interface PlayerStateMessage extends MessageBase {
   upgrades: Partial<Record<UpgradeId, number>>;
   /** Server tick this player last fired on, for the client's reload indicator. */
   lastFiredTick: number;
+  /** Hull tier, 1..`MAX_HULL_TIER`; rises every `LEVELS_PER_HULL_TIER` levels. */
+  hullTier?: number;
+  /** Unspent upgrade points, so the HUD badge is right immediately on connect. */
+  upgradePoints?: number;
+  /** Seconds of spawn shield remaining; > 0 means damage is ignored. */
+  shieldS?: number;
+  /** True while dead, so the client shows the countdown instead of a hull. */
+  dead?: boolean;
+  /** Seconds until respawn while dead. */
+  respawnInS?: number;
 }
 
 /** What happened. Discrete, one-off facts — never used for continuous state. */
@@ -323,6 +353,26 @@ export interface EventMessage extends MessageBase {
     readonly amount?: number;
     readonly boxId?: string;
     readonly shipClass?: ShipClass;
+    /** Box payload, for spawn/claim events. */
+    readonly boxKind?: BoxKind;
+    /** NPC tier, for kill events. */
+    readonly npcTier?: NpcTier;
+    /** Upgrade choices offered on a level-up (the modal renders these). */
+    readonly choices?: readonly UpgradeId[];
+    /**
+     * Unspent points after the award.
+     *
+     * Sent with the level-up rather than derived on the client: the client cannot know
+     * how many levels a single award crossed, so any local arithmetic would show the
+     * wrong badge exactly when a player is most likely to look at it.
+     */
+    readonly upgradePoints?: number;
+    /** Current ranks, so the modal can label each offer with its true rank. */
+    readonly upgrades?: Partial<Record<UpgradeId, number>>;
+    /** Seconds until respawn, for a death event. */
+    readonly respawnInS?: number;
+    /** XP still needed for the next level. */
+    readonly xpToNext?: number;
   };
 }
 

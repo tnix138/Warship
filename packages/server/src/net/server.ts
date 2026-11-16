@@ -350,7 +350,10 @@ export class NetworkServer {
     this.#log.info('player joined', {
       player: player.id,
       shipClass: player.shipClass,
-      clientVersion: message.client.version,
+      /* `client` is wire data, not a trusted object: a hand-rolled or older client can
+         omit it entirely, and an uncaught TypeError here would take down the tick loop
+         for every player in the shard. */
+      clientVersion: message.client?.version ?? 'unknown',
       players: this.world.playerCount,
       tick: this.world.tick,
     });
@@ -390,25 +393,49 @@ export class NetworkServer {
     }
   }
 
+  /**
+   * Deliberate box collection.
+   *
+   * Boxes are collected automatically when in range, so this exists for two cases: a
+   * client that wants to claim a box it is *nearly* touching, and a future manual-pickup
+   * rule. It validates range server-side rather than trusting the client's claim.
+   */
   #onPickup(connection: Connection, message: PickupMessage): void {
     const player = this.#playerOf(connection);
-    if (player === undefined) return;
-    // Loot boxes do not exist yet; acknowledge the frame shape without acting on it
-    // so the client's protocol path is exercised end to end.
-    this.#log.debug('PICKUP ignored (no boxes in MVP)', {
-      player: player.id,
-      boxId: message.boxId,
-    });
+    if (!player?.isAlive) return;
+
+    const claimed = this.loop.claimBox(player, message.boxId);
+    if (!claimed) {
+      this.#log.debug('PICKUP refused', { player: player.id, boxId: message.boxId });
+    }
   }
 
+  /**
+   * Buy one upgrade rank.
+   *
+   * The server re-derives everything: whether the player has a point, whether the upgrade
+   * is available, and what the new rank is. A client that sends a bogus frame is refused
+   * silently rather than corrupted.
+   */
   #onUpgrade(connection: Connection, message: UpgradeMessage): void {
     const player = this.#playerOf(connection);
     if (player === undefined) return;
-    // Purchase validation lands with the dock UI milestone. The frame is parsed and
-    // attributed here so the protocol surface is already exercised.
-    this.#log.debug('UPGRADE ignored (dock not implemented)', {
+
+    const result = this.loop.purchaseUpgrade(player, message.upgradeId);
+
+    if (result === null) {
+      this.#log.debug('UPGRADE refused', {
+        player: player.id,
+        upgradeId: message.upgradeId,
+        points: player.upgradePoints,
+      });
+      return;
+    }
+
+    this.#log.debug('UPGRADE applied', {
       player: player.id,
       upgradeId: message.upgradeId,
+      rank: result,
     });
   }
 

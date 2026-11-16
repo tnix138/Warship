@@ -8,6 +8,7 @@ import {
   ShipClass,
   type EventKind,
   type InputFrame,
+  type PlayerStateMessage,
   type SnapshotMessage,
 } from '@warship/shared';
 
@@ -17,6 +18,7 @@ import { InputController } from './Input';
 import { Connection } from '../net/Connection';
 import { loadTextures } from '../render/assets';
 import { Camera } from '../render/camera';
+import { CombatRenderer } from '../render/CombatRenderer';
 import { EntityRenderer } from '../render/EntityRenderer';
 import { Ocean } from '../render/ocean';
 import { WorldObjects } from '../render/WorldObjects';
@@ -80,6 +82,11 @@ export async function createGame(options: GameOptions): Promise<Game> {
   const entities = new EntityRenderer(textures);
   camera.world.addChild(entities.view);
 
+  /* NPC hulls, shots and crates. Above the ships so a tracer reads as passing over a
+     deck, and in world space so they pan and zoom with everything else. */
+  const combat = new CombatRenderer();
+  camera.world.addChild(combat.view);
+
   const input = new InputController(options.canvas);
 
   /* Camera controls. Wheel zoom is the only one that composes with a following
@@ -87,6 +94,10 @@ export async function createGame(options: GameOptions): Promise<Game> {
   const detachZoom = camera.attachZoom(options.canvas);
 
   let joined = false;
+  /** Newest private state, for the upgrade modal's rank labels. */
+  let lastSelf: PlayerStateMessage | null = null;
+  /** Seconds spent dead, for a smooth countdown between sparse PLAYER_STATE frames. */
+  let deadForS = 0;
   let sequence = 0;
   let inputAccumulator = 0;
   const inputIntervalS = 1 / CLIENT_INPUT_RATE;
@@ -113,6 +124,10 @@ export async function createGame(options: GameOptions): Promise<Game> {
       onPlayerState: (state) => {
         // The first PLAYER_STATE tells us which entity is ours.
         world.selfId = state.entityId;
+        /* Re-anchor the death clock on every authoritative state: this is what keeps
+           the countdown honest if a packet is late or lost. */
+        lastSelf = state;
+        deadForS = 0;
         hud.updateSelf(state);
 
         // Prediction must integrate with exactly the server's numbers, or the two
@@ -153,6 +168,24 @@ export async function createGame(options: GameOptions): Promise<Game> {
       },
       onEvent: (event) => {
         hud.pushEvent(describeEvent(event.kind, event.data));
+
+        /* A level-up is the one event that needs a decision, so it opens the picker.
+           The server sent the choices; the HUD only renders them. */
+        if (event.kind === 'levelup') {
+          const choices = event.data?.choices ?? [];
+          const owned = event.data?.upgrades ?? lastSelf?.upgrades ?? {};
+          hud.showUpgrades({
+            points: event.data?.upgradePoints ?? 1,
+            offers: choices.map((id) => ({
+              upgradeId: id,
+              rank: (owned[id] ?? 0) + 1,
+            })),
+            onChoose: (upgradeId) => {
+              connection.sendUpgrade(upgradeId);
+              hud.hideUpgrades();
+            },
+          });
+        }
       },
       onError: (error) => {
         // A dropped socket is recoverable (the connection retries); never fatal.
@@ -180,6 +213,15 @@ export async function createGame(options: GameOptions): Promise<Game> {
     const height = app.screen.height;
     camera.setViewport(width, height);
     ocean.resize(width, height);
+
+    /* Death countdown: interpolated locally between PLAYER_STATE frames so the number
+       ticks down smoothly. Each frame we step it, and the next authoritative state
+       re-anchors it, so a dropped packet cannot leave it stuck. */
+    if (lastSelf?.dead === true) {
+      deadForS += deltaS;
+      const remaining = Math.max(0, (lastSelf.respawnInS ?? 0) - deadForS);
+      hud.updateDeathCountdown(remaining);
+    }
 
     /* Input: sample the devices, ship at most one INPUT frame per tick. */
     inputAccumulator += deltaS;
@@ -228,6 +270,7 @@ export async function createGame(options: GameOptions): Promise<Game> {
     /* Draw: interpolated poses for everyone else, predicted pose for us. */
     const renderList = world.renderEntities(now, prediction.ready ? prediction.actor : undefined);
     entities.update(renderList, now);
+    combat.update(renderList, now);
     /* Feed the ship's speed so the surface streams past in proportion to travel. */
     ocean.update(deltaMS, prediction.ready ? Math.abs(prediction.actor.speed) : 0);
     hud.updateDebug(
@@ -237,7 +280,7 @@ export async function createGame(options: GameOptions): Promise<Game> {
         cameraX: camera.x,
         cameraY: camera.y,
         rendererName: app.renderer.name,
-        entities: entities.drawnCount,
+        entities: entities.drawnCount + combat.drawnCount,
         tick: world.tick,
         buffered: world.interpolation.bufferedFrames,
       },
@@ -255,6 +298,7 @@ export async function createGame(options: GameOptions): Promise<Game> {
       detachZoom();
       input.destroy();
       entities.destroy();
+      combat.destroy();
       worldObjects.destroy();
       hud.destroy();
       app.destroy(true, { children: true });

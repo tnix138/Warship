@@ -449,6 +449,17 @@ export const RENDER_WATER_PARALLAX = 1 as const;
 export const RENDER_SELF_RING_PULSE_MS = 1_400 as const;
 
 /**
+ * How long a projectile's streak is drawn, in world units.
+ *
+ * Purely cosmetic — collision uses the swept segment, never this. It is long enough to
+ * read as a tracer at 720 u/s and short enough not to look like a laser.
+ */
+export const RENDER_PROJECTILE_TRAIL_LENGTH = 14 as const;
+
+/** Opacity of the fainter half of a projectile's trail. */
+export const RENDER_PROJECTILE_TAIL_ALPHA = 0.45 as const;
+
+/**
  * Whether to log every key press the input controller resolves.
  *
  * Enabled by `?debug=keys` in the URL or `localStorage.warshipDebugKeys = '1'`.

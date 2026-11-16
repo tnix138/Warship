@@ -1,4 +1,8 @@
 import {
+  AOI_INTEREST_RADIUS,
+  BoxKind,
+  EntityKind,
+  EventKind,
   INPUT_STALE_AFTER_MS,
   MessageType,
   PLAYER_STATE_INTERVAL_TICKS,
@@ -6,12 +10,17 @@ import {
   SNAPSHOT_KEYFRAME_INTERVAL_TICKS,
   PROTOCOL_VERSION,
   SNAPSHOT_COORDINATE_DECIMALS,
+  RESPAWN_DELAY_S,
   TICK_DURATION_S,
+  UPGRADE_CHOICES,
   computeShipStats,
   levelFromXp,
   stepShipMotion,
+  wrappedDelta,
   wrapWorldPosition,
   xpToNextLevel,
+  zoneAt,
+  NpcState,
   type InputFrame,
   type PlayerStateMessage,
   type ServerMessage,
@@ -22,7 +31,19 @@ import {
 
 import type { Logger } from '../logger.js';
 import { createAoiState, isUnchanged, updateAoi, type AoiState } from './AoI.js';
+import {
+  applyDamage,
+  isPickupInRange,
+  killReward,
+  lootForKill,
+  repairAmount,
+  resolveHits,
+  type Damageable,
+} from './Combat.js';
+import type { Npc } from './Npc.js';
+import type { Projectile } from './Projectile.js';
 import type { Player } from './Player.js';
+import { addXp, hullTierForLevel, purchasableUpgrades, purchaseUpgrade } from './Progression.js';
 import type { World } from './World.js';
 
 /**
@@ -75,7 +96,22 @@ export class Loop {
     const tick = this.#world.advanceTick();
     const dt = TICK_DURATION_S;
 
+    /* Order is the simulation's contract, and combat is why it matters:
+         1. respawn whoever is due — before movement, so a revived ship moves this tick,
+         2. players and NPCs move,
+         3. projectiles advance, so their swept segment is this tick's displacement,
+         4. hits resolve against the *post-move* poses — the state the snapshot describes,
+         5. deaths, loot and pickups,
+         6. spatial index, snapshots, private state. */
+    this.#processRespawns(tick);
     this.#stepPlayers(dt, tick);
+    this.#stepNpcs(tick);
+    this.#world.projectiles.advance();
+    this.#resolveCombat(tick);
+    this.#processDeaths(tick);
+    this.#processPickups(tick);
+    this.#world.boxes.advance();
+    this.#world.maintainNpcs();
     this.#world.refreshGrid();
     this.#broadcastSnapshot(tick);
 
@@ -117,13 +153,434 @@ export class Loop {
       player.rotation = next.rotation;
       player.speed = next.speed;
 
-      /* Firing is *gated* here but not implemented yet — combat and projectiles
-         are a later milestone. Recording the attempt now means the reload
-         indicator in `PLAYER_STATE` already has honest data. */
-      if (intent.firing && tick - player.lastFiredTick >= this.#reloadTicks(stats.reloadTime)) {
-        player.lastFiredTick = tick;
+      /* Firing. The reload gate is checked before spawning so a held trigger produces
+         exactly one shot per reload time, and `lastFiredTick` only advances on a shot
+         that actually left the barrel — a refused spawn (pool full) must not silently
+         consume the player's cooldown. */
+      const reloaded =
+        player.lastFiredTick === null ||
+        tick - player.lastFiredTick >= this.#reloadTicks(stats.reloadTime);
+      if (intent.firing && reloaded) {
+        const shot = this.#world.projectiles.spawn({
+          ownerId: player.id,
+          ownerIsNpc: false,
+          x: player.x,
+          y: player.y,
+          angle: player.rotation,
+          damage: stats.damage,
+          shipMaxSpeed: stats.maxSpeed,
+        });
+        if (shot !== null) player.lastFiredTick = tick;
       }
     }
+  }
+
+  /**
+   * Step every NPC's brain and motion, and let them fire.
+   *
+   * The AI returns an intent rather than acting, so the reload gate and the projectile
+   * cap are enforced in exactly one place per faction — here and in `#stepPlayers` — and
+   * an NPC can never bypass them.
+   */
+  #stepNpcs(tick: number): void {
+    /* Targets are gathered once per tick rather than per NPC: with 50 NPCs against 100
+       players a per-NPC scan is 5 000 distance checks, which is affordable but pointless
+       when the answer is the same list. */
+    const targets: { id: string; x: number; y: number }[] = [];
+    for (const player of this.#world.allPlayers()) {
+      if (!player.isAlive) continue;
+      targets.push({ id: player.id, x: player.x, y: player.y });
+    }
+
+    for (const npc of this.#world.npcs.values()) {
+      if (!npc.isAlive) continue;
+
+      const intent = npc.step(tick, targets);
+      if (!intent.firing) continue;
+
+      const shot = this.#world.projectiles.spawn({
+        ownerId: npc.id,
+        ownerIsNpc: true,
+        x: npc.x,
+        y: npc.y,
+        angle: npc.rotation,
+        damage: npc.stats.damage,
+        shipMaxSpeed: npc.stats.maxSpeed,
+      });
+      if (shot !== null) npc.lastFiredTick = tick;
+    }
+  }
+
+  /**
+   * Resolve every live shot against every damageable target.
+   *
+   * Shielded players are skipped entirely rather than taking zero damage: a spawn shield
+   * that still consumed projectiles would let a camper clear their own line of fire.
+   */
+  #resolveCombat(tick: number): void {
+    const shots = [...this.#world.projectiles.live()].map((projectile) => ({
+      id: projectile.id,
+      ownerId: projectile.ownerId,
+      ownerIsNpc: projectile.ownerIsNpc,
+      x: projectile.x,
+      y: projectile.y,
+      previousX: projectile.previousX,
+      previousY: projectile.previousY,
+      damage: projectile.damage,
+    }));
+
+    if (shots.length === 0) return;
+
+    const targets: (Damageable & { readonly isNpc: boolean })[] = [];
+    for (const player of this.#world.allPlayers()) {
+      if (!player.isAlive || player.shieldSeconds(tick) > 0) continue;
+      targets.push({
+        id: player.id,
+        x: player.x,
+        y: player.y,
+        radius: computeShipStats(player.shipClass, player.upgrades).radius,
+        isNpc: false,
+      });
+    }
+    for (const npc of this.#world.npcs.values()) {
+      if (!npc.isAlive) continue;
+      targets.push({ id: npc.id, x: npc.x, y: npc.y, radius: npc.radius, isNpc: true });
+    }
+
+    const hits = resolveHits({ shots, targets });
+
+    for (const hit of hits) {
+      const projectile = this.#findProjectile(hit.projectileId);
+      if (projectile !== undefined) this.#world.projectiles.release(projectile);
+
+      const npc = this.#world.npcs.get(hit.targetId);
+      if (npc !== undefined) {
+        const dealt = npc.applyDamage(hit.damage);
+        if (dealt > 0) {
+          this.#broadcast({
+            v: PROTOCOL_VERSION,
+            t: MessageType.EVENT,
+            tick,
+            kind: EventKind.Damaged,
+            entityId: npc.id,
+            data: { amount: Math.round(dealt) },
+          });
+        }
+        continue;
+      }
+
+      const player = this.#world.players.get(hit.targetId);
+      if (player === undefined) continue;
+
+      const armor = computeShipStats(player.shipClass, player.upgrades).armor;
+      const dealt = player.applyDamage(applyDamage({ damage: hit.damage, armor, shieldS: 0 }));
+      if (dealt > 0) {
+        this.#send(player.id, {
+          v: PROTOCOL_VERSION,
+          t: MessageType.EVENT,
+          tick,
+          kind: EventKind.Damaged,
+          entityId: player.id,
+          data: { amount: Math.round(dealt) },
+        });
+      }
+    }
+  }
+
+  /** Wire record for a box, including its payload kind for the client's icon. */
+  #boxRecord(id: string): SnapshotEntity | null {
+    for (const box of this.#world.boxes.live()) {
+      if (box.id !== id) continue;
+      return {
+        id: box.id,
+        x: box.x,
+        y: box.y,
+        rotation: 0,
+        hp: 1,
+        kind: EntityKind.Box,
+        boxKind: box.kind,
+      };
+    }
+    return null;
+  }
+
+  /** Projectile by slot id. Linear, but the pool is capped at 500 and only on a hit. */
+  #findProjectile(id: string): Projectile | undefined {
+    for (const projectile of this.#world.projectiles.live()) {
+      if (projectile.id === id) return projectile;
+    }
+    return undefined;
+  }
+
+  /**
+   * Turn deaths into loot, XP and respawn timers.
+   *
+   * NPCs are removed from play immediately and respawned by `maintainNpcs`; players stay
+   * as a dead record so their connection, level and XP survive, and are revived by
+   * `#processRespawns`.
+   */
+  #processDeaths(tick: number): void {
+    for (const npc of this.#world.npcs.values()) {
+      if (npc.hp > 0 || npc.state === NpcState.Dead) continue;
+      npc.kill(tick);
+      this.#onNpcKilled(npc, tick);
+    }
+
+    for (const player of this.#world.allPlayers()) {
+      if (player.hp > 0 || player.diedAtTick !== null) continue;
+      player.die(tick);
+
+      this.#send(player.id, {
+        v: PROTOCOL_VERSION,
+        t: MessageType.EVENT,
+        tick,
+        kind: EventKind.Kill,
+        entityId: player.id,
+        data: { victimId: player.id, respawnInS: RESPAWN_DELAY_S },
+      });
+      this.#broadcast({
+        v: PROTOCOL_VERSION,
+        t: MessageType.EVENT,
+        tick,
+        kind: EventKind.Kill,
+        entityId: player.id,
+        data: { victimId: player.id },
+      });
+    }
+  }
+
+  /** Award XP for an NPC kill and scatter its loot. */
+  #onNpcKilled(npc: Npc, tick: number): void {
+    const zone = zoneAt({ x: npc.x, y: npc.y });
+
+    /* The killer is not tracked through the projectile chain here: attributing a kill is
+       a PvP concern, and an NPC has no owner. Every player within AoI interest of the
+       wreck gets the reward, which for NPC combat is the same thing and needs no
+       ownership bookkeeping. */
+    for (const player of this.#world.allPlayers()) {
+      if (!player.isAlive) continue;
+
+      const distanceSquared = wrappedDelta(player, npc);
+      if (Math.hypot(distanceSquared.x, distanceSquared.y) > AOI_INTEREST_RADIUS) continue;
+
+      const earned = killReward({
+        tier: npc.tier,
+        baseXp: npc.stats.xp,
+        zone,
+        playerLevel: levelFromXp(player.xp),
+        npcLevel: levelFromXp(npc.stats.xp * 40),
+      });
+
+      this.#grantXp(player, earned, tick);
+    }
+
+    for (const drop of lootForKill({ tier: npc.tier, x: npc.x, y: npc.y, sourceId: npc.id })) {
+      const box = this.#world.boxes.spawn({
+        x: npc.x,
+        y: npc.y,
+        kind: drop.kind,
+        value: drop.value,
+        sourceId: npc.id,
+        angle: drop.angle,
+        distance: drop.distance,
+      });
+      if (box === null) break; // pool full: stop rather than spin
+
+      this.#broadcast({
+        v: PROTOCOL_VERSION,
+        t: MessageType.EVENT,
+        tick,
+        kind: EventKind.BoxSpawn,
+        entityId: box.id,
+        data: { boxId: box.id, boxKind: box.kind },
+      });
+    }
+
+    this.#broadcast({
+      v: PROTOCOL_VERSION,
+      t: MessageType.EVENT,
+      tick,
+      kind: EventKind.Kill,
+      entityId: npc.id,
+      data: { victimId: npc.id, npcTier: npc.tier },
+    });
+  }
+
+  /**
+   * Add XP to a player and announce any level-up.
+   *
+   * The announcement carries the upgrade *choices* so the client's modal can render from
+   * the server's own validated list instead of guessing and being refused on submit.
+   */
+  #grantXp(player: Player, amount: number, tick: number): void {
+    if (amount <= 0) return;
+
+    const before = levelFromXp(player.xp);
+    const outcome = addXp(player.xp, amount, player.upgradePoints);
+
+    player.xp = outcome.xp;
+    player.level = outcome.level;
+    player.upgradePoints = outcome.upgradePoints;
+
+    if (outcome.result === null) return;
+
+    const choices = purchasableUpgrades(player.upgrades, player.upgradePoints).slice(
+      0,
+      UPGRADE_CHOICES,
+    );
+
+    this.#send(player.id, {
+      v: PROTOCOL_VERSION,
+      t: MessageType.EVENT,
+      tick,
+      kind: EventKind.LevelUp,
+      entityId: player.id,
+      data: {
+        level: outcome.result.newLevel,
+        xp: Math.round(player.xp),
+        xpToNext: xpToNextLevel(player.xp),
+        choices,
+        upgradePoints: player.upgradePoints,
+        upgrades: Object.fromEntries(player.upgrades),
+      },
+    });
+
+    this.#log.info('player levelled up', {
+      player: player.id,
+      from: before,
+      to: outcome.result.newLevel,
+      points: outcome.result.pointsGranted,
+      hullTier: outcome.result.hullTier,
+    });
+  }
+
+  /** Revive everyone whose respawn timer has elapsed. */
+  #processRespawns(tick: number): void {
+    for (const player of this.#world.allPlayers()) {
+      if (player.diedAtTick === null) continue;
+      if (player.respawnInSeconds(tick) > 0) continue;
+
+      this.#world.respawnPlayer(player);
+      this.#log.debug('player respawned', { player: player.id, tick });
+    }
+
+    /* NPC spawn slots are refilled on their own cadence so a kill does not instantly
+       repopulate the zone the player just cleared. */
+    this.#world.maintainNpcs();
+  }
+
+  /**
+   * Collect any box a player is standing on.
+   *
+   * Automatic rather than key-triggered: the player already has both hands on steering
+   * and the mouse, and a manual pickup in a game where everything else is a movement
+   * decision would be the only interaction in the game. The `PICKUP` frame still exists
+   * for a deliberate future pickup and is handled separately.
+   */
+  #processPickups(tick: number): void {
+    for (const box of [...this.#world.boxes.live()]) {
+      for (const player of this.#world.allPlayers()) {
+        if (!player.isAlive) continue;
+        if (!isPickupInRange(box, player)) continue;
+
+        this.#applyBox(player, box.kind, box.value, tick);
+        this.#world.boxes.release(box);
+
+        this.#send(player.id, {
+          v: PROTOCOL_VERSION,
+          t: MessageType.EVENT,
+          tick,
+          kind: EventKind.Pickup,
+          entityId: box.id,
+          data: { boxId: box.id, boxKind: box.kind, amount: box.value },
+        });
+        this.#broadcast({
+          v: PROTOCOL_VERSION,
+          t: MessageType.EVENT,
+          tick,
+          kind: EventKind.BoxClaimed,
+          entityId: box.id,
+          data: { boxId: box.id, killerId: player.id },
+        });
+        break;
+      }
+    }
+  }
+
+  #applyBox(player: Player, kind: BoxKind, value: number, tick: number): void {
+    switch (kind) {
+      case BoxKind.Scrap: {
+        player.scrap += value;
+        return;
+      }
+      case BoxKind.Repair: {
+        player.heal(repairAmount(player.stats.maxHp));
+        return;
+      }
+      case BoxKind.Part: {
+        this.#grantXp(player, value, tick);
+        return;
+      }
+    }
+  }
+
+  /**
+   * Claim a specific box on a player's behalf.
+   *
+   * Returns false when the box does not exist, is out of range, or the player is dead.
+   * Range is re-checked here rather than trusted from the client, because "which box"
+   * is a client-supplied id and the client is not authoritative about anything.
+   */
+  claimBox(player: Player, boxId: string): boolean {
+    if (!player.isAlive) return false;
+
+    for (const box of this.#world.boxes.live()) {
+      if (box.id !== boxId) continue;
+      if (!isPickupInRange(box, player)) return false;
+
+      this.#applyBox(player, box.kind, box.value, this.#world.tick);
+      this.#world.boxes.release(box);
+
+      this.#send(player.id, {
+        v: PROTOCOL_VERSION,
+        t: MessageType.EVENT,
+        tick: this.#world.tick,
+        kind: EventKind.Pickup,
+        entityId: box.id,
+        data: { boxId: box.id, boxKind: box.kind, amount: box.value },
+      });
+      return true;
+    }
+
+    return false;
+  }
+
+  /**
+   * Buy one rank of an upgrade.
+   *
+   * Returns the new rank, or `null` when the purchase is illegal. Every rule lives in
+   * `purchaseUpgrade`, so a client cannot buy past the point cap, past a rank cap, or
+   * without a point — no matter what it sends.
+   */
+  purchaseUpgrade(player: Player, upgradeId: UpgradeId): number | null {
+    const outcome = purchaseUpgrade({
+      upgradeId,
+      owned: player.upgrades,
+      upgradePoints: player.upgradePoints,
+    });
+    if (outcome === null) return null;
+
+    player.upgrades.set(upgradeId, outcome.rank);
+    player.upgradePoints = outcome.upgradePoints;
+
+    /* Stats may have changed (a hull upgrade raises max HP), so clamp the current hull
+       to the new maximum rather than leaving it above. */
+    const stats = computeShipStats(player.shipClass, player.upgrades);
+    player.maxHp = stats.maxHp;
+    player.hp = Math.min(player.hp, player.maxHp);
+
+    this.sendPlayerState(player);
+    return outcome.rank;
   }
 
   /** Neutral intent when the player has not sent anything recently. */
@@ -163,19 +620,52 @@ export class Loop {
    * a delta ambiguous, so a client can always recover from exactly one full frame.
    */
   #broadcastSnapshot(tick: number): void {
-    const players = this.#world.snapshotEntities();
+    const world = this.#world.snapshotEntities();
 
-    // Built once and shared: `toSnapshotEntity` allocates, and at 100 players a
-    // per-viewer rebuild would be 10 000 allocations per tick.
+    /* Every entity's wire record is built once and shared by all viewers. At 100 players
+       plus 50 NPCs plus a few dozen projectiles, a per-viewer rebuild would be tens of
+       thousands of allocations every 50 ms — and those allocations land inside the tick
+       the player's own prediction is sensitive to. */
     const records = new Map<string, SnapshotEntity>();
     const positions = new Map<string, { id: string; x: number; y: number }>();
-    for (const player of players) {
-      const record = roundEntity(player.toSnapshotEntity());
+
+    const consider = (record: SnapshotEntity): void => {
       records.set(record.id, record);
       positions.set(record.id, { id: record.id, x: record.x, y: record.y });
+    };
+
+    for (const player of world.players) consider(roundEntity(player.toSnapshotEntity(tick)));
+
+    for (const npc of world.npcs) {
+      const base = npc.toSnapshotEntity();
+      consider(
+        roundEntity({
+          ...base,
+          kind: EntityKind.Npc,
+          npcTier: npc.tier,
+        }),
+      );
     }
 
-    for (const viewer of players) {
+    for (const projectile of world.projectiles) {
+      consider(
+        roundEntity({
+          id: projectile.id,
+          x: projectile.x,
+          y: projectile.y,
+          rotation: 0,
+          hp: 1,
+          kind: EntityKind.Projectile,
+        }),
+      );
+    }
+
+    for (const box of world.boxes) {
+      const live = this.#boxRecord(box.id);
+      if (live !== null) consider(roundEntity(live));
+    }
+
+    for (const viewer of world.players) {
       const aoi = this.#aoiFor(viewer.id);
       const origin = positions.get(viewer.id);
       if (origin === undefined) continue;
@@ -321,6 +811,8 @@ function buildPlayerState(
   tick: number,
   upgrades: Partial<Record<UpgradeId, number>>,
 ): PlayerStateMessage {
+  const dead = player.diedAtTick !== null;
+
   return {
     v: PROTOCOL_VERSION,
     t: MessageType.PLAYER_STATE,
@@ -335,19 +827,29 @@ function buildPlayerState(
     scrap: Math.round(player.scrap),
     zone: player.zone,
     upgrades,
-    lastFiredTick: player.lastFiredTick,
+    /* The wire field stays a plain number so the client's reload indicator does not
+       have to model "never fired" — `-1` is safely in the past for any tick. */
+    lastFiredTick: player.lastFiredTick ?? -1,
+    hullTier: hullTierForLevel(levelFromXp(player.xp)),
+    upgradePoints: player.upgradePoints,
+    shieldS: Math.round(player.shieldSeconds(tick) * 10) / 10,
+    dead,
+    ...(dead ? { respawnInS: Math.ceil(player.respawnInSeconds(tick)) } : {}),
   };
 }
 
 /** Snapshot coordinates are rounded so frames stay small and diffs stay readable. */
 function roundEntity(entity: SnapshotEntity): SnapshotEntity {
   const factor = 10 ** SNAPSHOT_COORDINATE_DECIMALS;
+  /* Spread first, then override the quantised fields. Rebuilding the object field by
+     field silently drops anything added later, and it did: `kind`, `npcTier`, `boxKind`
+     and `shield` were all lost here, so the client could not tell an NPC from a player
+     and every hull lost its spawn-shield indicator. */
   return {
-    id: entity.id,
+    ...entity,
     x: Math.round(entity.x * factor) / factor,
     y: Math.round(entity.y * factor) / factor,
     rotation: Math.round(entity.rotation * 1000) / 1000,
     hp: Math.round(entity.hp),
-    shipClass: entity.shipClass,
   };
 }

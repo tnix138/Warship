@@ -1,4 +1,11 @@
-import type { ShipClass, SnapshotEntity, SnapshotMessage } from '@warship/shared';
+import type {
+  BoxKind,
+  EntityKind,
+  NpcTier,
+  ShipClass,
+  SnapshotEntity,
+  SnapshotMessage,
+} from '@warship/shared';
 
 import { Interpolation } from '../net/Interpolation';
 
@@ -30,6 +37,19 @@ export interface ClientEntity {
   rotation: number;
   hp: number;
   shipClass: ShipClass;
+  /**
+   * What this id is.
+   *
+   * Remembered from the first frame that described it, because a delta only re-states
+   * what changed and `kind` is not a field that changes. Every later frame can omit it.
+   */
+  kind: EntityKind;
+  /** NPC tier, for colour and scale. */
+  npcTier?: NpcTier;
+  /** Box payload, for colour. */
+  boxKind?: BoxKind;
+  /** Shield seconds remaining; non-zero means the hull cannot be hurt. */
+  shield: number;
   /** Server tick this state came from. */
   tick: number;
   /** Newest input sequence the server has applied for this entity (self only). */
@@ -48,6 +68,14 @@ export interface RenderEntity {
   readonly alpha: number;
   /** True for the local player, whose pose comes from prediction instead. */
   readonly isSelf: boolean;
+  /** What is being drawn: a ship, a shot or a crate. */
+  readonly kind: EntityKind;
+  /** NPC tier, when `kind` is an NPC. */
+  readonly npcTier?: NpcTier;
+  /** Box payload, when `kind` is a box. */
+  readonly boxKind?: BoxKind;
+  /** Shield seconds left, for the invulnerability halo. */
+  readonly shield: number;
 }
 
 export class ClientWorld {
@@ -102,14 +130,19 @@ export class ClientWorld {
       {
         tick: snapshot.tick,
         serverTime: snapshot.serverTime,
-        entities: [...this.entities.values()].map((entity) => ({
-          id: entity.id,
-          x: entity.x,
-          y: entity.y,
-          rotation: entity.rotation,
-          hp: entity.hp,
-          shipClass: entity.shipClass,
-        })),
+        /* Only ships go into the pose buffer. Shots are short-lived and a crate does
+           not move, so interpolating either would add latency for nothing; both are
+           drawn straight from authoritative state. */
+        entities: [...this.entities.values()]
+          .filter((entity) => entity.kind === 'player' || entity.kind === 'npc')
+          .map((entity) => ({
+            id: entity.id,
+            x: entity.x,
+            y: entity.y,
+            rotation: entity.rotation,
+            hp: entity.hp,
+            shipClass: entity.shipClass,
+          })),
       },
       {
         full: snapshot.full,
@@ -160,10 +193,13 @@ export class ClientWorld {
           shipClass: authoritative?.shipClass ?? (pose.shipClass as ShipClass),
           alpha: 1,
           isSelf: true,
+          kind: 'player',
+          shield: authoritative?.shield ?? 0,
         });
         continue;
       }
 
+      const kind = authoritative?.kind ?? 'player';
       out.push({
         id: pose.id,
         x: pose.x,
@@ -173,6 +209,30 @@ export class ClientWorld {
         shipClass: authoritative?.shipClass ?? (pose.shipClass as ShipClass),
         alpha: alpha ?? 1,
         isSelf,
+        kind,
+        ...(authoritative?.npcTier === undefined ? {} : { npcTier: authoritative.npcTier }),
+        shield: authoritative?.shield ?? 0,
+      });
+    }
+
+    /* Shots and crates are drawn from authoritative state, not the pose buffer. They are
+       short-lived and jitter-free by nature, and interpolating them would lag the impact
+       behind the flash it causes. */
+    for (const entity of this.entities.values()) {
+      if (entity.kind !== 'projectile' && entity.kind !== 'box') continue;
+
+      out.push({
+        id: entity.id,
+        x: entity.x,
+        y: entity.y,
+        rotation: entity.rotation,
+        hp: entity.hp,
+        shipClass: entity.shipClass,
+        alpha: 1,
+        isSelf: false,
+        kind: entity.kind,
+        ...(entity.boxKind === undefined ? {} : { boxKind: entity.boxKind }),
+        shield: 0,
       });
     }
 
@@ -194,6 +254,8 @@ export class ClientWorld {
           shipClass: authoritative.shipClass,
           alpha: 1,
           isSelf: true,
+          kind: 'player',
+          shield: authoritative.shield,
         });
       }
     }
@@ -221,7 +283,11 @@ export class ClientWorld {
         rotation: entity.rotation,
         hp: entity.hp,
         shipClass: entity.shipClass,
+        kind: entity.kind ?? 'player',
+        shield: entity.shield ?? 0,
         tick,
+        ...(entity.npcTier === undefined ? {} : { npcTier: entity.npcTier }),
+        ...(entity.boxKind === undefined ? {} : { boxKind: entity.boxKind }),
         ...(entity.ackSeq === undefined ? {} : { ackSeq: entity.ackSeq }),
       });
       return;
@@ -233,6 +299,14 @@ export class ClientWorld {
     existing.hp = entity.hp;
     existing.tick = tick;
     if (entity.shipClass !== undefined) existing.shipClass = entity.shipClass;
+    /* `kind` is not sticky the way position is: it is only ever sent on a full frame or
+       a first appearance, so a later frame omitting it must not erase what we know. */
+    if (entity.kind !== undefined) existing.kind = entity.kind;
+    if (entity.npcTier !== undefined) existing.npcTier = entity.npcTier;
+    if (entity.boxKind !== undefined) existing.boxKind = entity.boxKind;
+    /* The shield, by contrast, *must* be able to fall back to zero, so it is always
+       re-stated and always assigned. */
+    existing.shield = entity.shield ?? 0;
     if (entity.ackSeq !== undefined) existing.ackSeq = entity.ackSeq;
   }
 }

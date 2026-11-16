@@ -1,5 +1,12 @@
+import { statsForTier } from './Combat.js';
+import { hullTierForLevel, hullTierMultiplier } from './Progression.js';
 import {
   DEFAULT_SHIP_CLASS,
+  EntityKind,
+  levelFromXp,
+  RESPAWN_DELAY_S,
+  RESPAWN_SHIELD_S,
+  TICK_DURATION_S,
   STARTING_LEVEL,
   STARTING_SCRAP,
   STARTING_XP,
@@ -41,13 +48,27 @@ export class Player {
   /* --- combat --- */
   hp: number;
   maxHp: number;
-  /** Tick the last legal shot was fired on; used for reload gating. */
-  lastFiredTick: number;
+  /**
+   * Tick the last legal shot was fired on; used for reload gating.
+   *
+   * `null` means "has never fired". A numeric zero would read as "fired on tick 0" and
+   * gate the first shot of a session behind a reload the player never spent — and after
+   * a respawn it would do the same again.
+   */
+  lastFiredTick: number | null;
+  /** Tick the spawn shield expires on. Damage is ignored until then. */
+  shieldUntilTick: number;
+  /** Tick this player died on, or `null` while alive. */
+  diedAtTick: number | null = null;
+  /** Tick this player respawned on; used by the spawn shield and by the HUD. */
+  respawnedAtTick: number | null = null;
 
   /* --- progression --- */
   level: number;
   xp: number;
   scrap: number;
+  /** Unspent upgrade points, granted one per level gained. */
+  upgradePoints = 0;
   readonly upgrades = new Map<UpgradeId, number>();
 
   /* --- session / input --- */
@@ -82,7 +103,8 @@ export class Player {
     this.rotation = options.rotation ?? 0;
     this.speed = 0;
 
-    this.lastFiredTick = 0;
+    this.lastFiredTick = null;
+    this.shieldUntilTick = 0;
     this.level = STARTING_LEVEL;
     this.xp = STARTING_XP;
     this.scrap = STARTING_SCRAP;
@@ -91,7 +113,10 @@ export class Player {
 
   /** Effective stats, recomputed from class + purchased upgrades. */
   get stats(): ShipStats {
-    return computeShipStats(this.shipClass, this.upgrades);
+    const base = computeShipStats(this.shipClass, this.upgrades);
+    /* Hull tier compounds everything the upgrade tree did. Applied here rather than in
+       every caller so there is one place where "what this ship can do" is decided. */
+    return statsForTier(base, hullTierMultiplier(hullTierForLevel(levelFromXp(this.xp))));
   }
 
   /** Zone is derived from position, never stored — it cannot go stale. */
@@ -99,9 +124,22 @@ export class Player {
     return zoneAt({ x: this.x, y: this.y });
   }
 
-  /** Whether the player is alive. MVP has no respawn flow yet. */
+  /** Whether the player is alive. A dead player is skipped by motion and combat. */
   get isAlive(): boolean {
-    return this.hp > 0;
+    return this.hp > 0 && this.diedAtTick === null;
+  }
+
+  /** Seconds of spawn shield remaining at `tick`, or 0. */
+  shieldSeconds(tick: number): number {
+    if (this.shieldUntilTick <= tick) return 0;
+    return (this.shieldUntilTick - tick) * TICK_DURATION_S;
+  }
+
+  /** Seconds until this player respawns, or 0 when alive or already due. */
+  respawnInSeconds(tick: number): number {
+    if (this.diedAtTick === null) return 0;
+    const due = this.diedAtTick + Math.round(RESPAWN_DELAY_S / TICK_DURATION_S);
+    return Math.max(0, (due - tick) * TICK_DURATION_S);
   }
 
   /** Accept an input intent. Returns false when it is stale or out of order. */
@@ -133,7 +171,8 @@ export class Player {
   }
 
   /** Flat projection used by snapshots. */
-  toSnapshotEntity(): SnapshotEntity {
+  toSnapshotEntity(tick: number): SnapshotEntity {
+    const shield = this.shieldSeconds(tick);
     return {
       id: this.id,
       x: this.x,
@@ -141,6 +180,36 @@ export class Player {
       rotation: this.rotation,
       hp: this.hp,
       shipClass: this.shipClass,
+      kind: EntityKind.Player,
+      ...(shield > 0 ? { shield } : {}),
     };
+  }
+
+  /** Mark this player dead. The loop schedules the respawn. */
+  die(tick: number): void {
+    this.hp = 0;
+    this.diedAtTick = tick;
+    this.speed = 0;
+    this.intent = null;
+  }
+
+  /** Bring a dead player back at a spawn point with a shield, keeping progression. */
+  respawn(options: {
+    readonly at: { readonly x: number; readonly y: number };
+    readonly tick: number;
+  }): void {
+    this.x = options.at.x;
+    this.y = options.at.y;
+    this.rotation = 0;
+    this.speed = 0;
+    this.maxHp = this.stats.maxHp;
+    this.hp = this.maxHp;
+    this.diedAtTick = null;
+    this.respawnedAtTick = options.tick;
+    this.shieldUntilTick = options.tick + Math.round(RESPAWN_SHIELD_S / TICK_DURATION_S);
+    this.intent = null;
+    this.lastFiredTick = null;
+    /* Level, XP, scrap and upgrades are deliberately untouched: dying costs position and
+       time, never progress. */
   }
 }

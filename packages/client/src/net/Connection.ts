@@ -7,6 +7,7 @@ import {
   PROTOCOL_VERSION,
   WS_SUBPROTOCOL,
   type ClientMessage,
+  type UpgradeId,
   type ConnectionState,
   type EventMessage,
   type InputFrame,
@@ -191,6 +192,11 @@ export class Connection {
   /** Request a loot box. */
   sendPickup(boxId: string): void {
     this.#send({ v: PROTOCOL_VERSION, t: MessageType.PICKUP, boxId });
+  }
+
+  /** Ask for an upgrade rank. The server decides whether the points allow it. */
+  sendUpgrade(upgradeId: UpgradeId): void {
+    this.#send({ v: PROTOCOL_VERSION, t: MessageType.UPGRADE, upgradeId });
   }
 
   /* ------------------------------------------------------------------------ */

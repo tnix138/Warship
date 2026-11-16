@@ -36,6 +36,7 @@ import {
   wrappedDelta,
   wrappedDistanceSq,
   xpForLevel,
+  xpProgress,
   xpToNextLevel,
   zoneAt,
   zoneMultiplier,
@@ -112,6 +113,47 @@ describe('levelFromXp', () => {
   test('negative and non-finite XP clamp to level 1', () => {
     assert.equal(levelFromXp(-100), STARTING_LEVEL);
     assert.equal(levelFromXp(Number.NaN), STARTING_LEVEL);
+  });
+
+  test('xpProgress reports a within-level fraction, not a fully-charted one', () => {
+    /* The bug this pins: a bar built from (into = span) is pinned at 100% and looks
+       plausible on a fresh character (`0 / 0`) while telling the player nothing. Both
+       ends of a level and the midpoint are checked so the fill has to actually move. */
+    const start = xpProgress(xpForLevel(2));
+    assert.equal(start.level, 2);
+    assert.equal(start.intoLevel, 0);
+    assert.equal(start.fraction, 0, 'a level begins empty');
+
+    const span = xpForLevel(3) - xpForLevel(2);
+    const middle = xpProgress(xpForLevel(2) + span / 2);
+    assert.ok(
+      Math.abs(middle.fraction - 0.5) < 1e-9,
+      `midpoint fraction was ${String(middle.fraction)}`,
+    );
+    assert.ok(Math.abs(middle.levelSpan - span) < 1e-9);
+
+    const lastXp = xpProgress(xpForLevel(3) - 1);
+    assert.ok(lastXp.fraction > 0.99 && lastXp.fraction < 1, 'a level ends nearly full');
+  });
+
+  test('xpProgress stays inside 0..1 at every level boundary', () => {
+    for (let level = 1; level < MAX_LEVEL; level += 1) {
+      const progress = xpProgress(xpForLevel(level));
+      assert.ok(progress.fraction >= 0 && progress.fraction <= 1, `level ${String(level)}`);
+      assert.ok(progress.levelSpan > 0, `level ${String(level)} needs a positive span`);
+    }
+  });
+
+  test('xpProgress at the level cap reports a full bar rather than dividing by zero', () => {
+    const capped = xpProgress(xpForLevel(MAX_LEVEL));
+    assert.equal(capped.level, MAX_LEVEL);
+    assert.equal(capped.fraction, 1);
+    assert.ok(Number.isFinite(capped.fraction));
+  });
+
+  test('xpProgress survives nonsense input', () => {
+    assert.equal(xpProgress(Number.NaN).fraction, 0);
+    assert.equal(xpProgress(-500).level, 1);
   });
 
   test('xpToNextLevel shrinks as XP approaches the threshold', () => {

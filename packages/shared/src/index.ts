@@ -10,4 +10,5 @@
 export * from './constants.js';
 export * from './protocol.js';
 export * from './upgrades.js';
+export * from './combat.js';
 export * from './formulas.js';

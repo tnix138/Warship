@@ -39,9 +39,37 @@
       <div class="hpbar" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0">
         <div class="hpbar__fill" id="hp-fill" style="width: 0%"></div>
       </div>
+      <div class="xpbar" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0">
+        <div class="xpbar__fill" id="xp-fill" style="width: 0%"></div>
+      </div>
       <div class="vitals__row vitals__row--sub">
         <span>level <b id="stat-level">1</b></span>
+        <span>xp <b id="stat-xp">0 / 100</b></span>
         <span>class <b id="stat-class">–</b></span>
+      </div>
+      <div class="vitals__row vitals__row--sub">
+        <span>scrap <b id="stat-scrap">0</b></span>
+        <span>points <b id="stat-points">0</b></span>
+        <span>tier <b id="stat-tier">1</b></span>
+      </div>
+    </section>
+
+    <!-- Level-up: the server sends the choices, the client only renders them. -->
+    <section class="modal" id="upgrade-modal" hidden aria-label="Choose an upgrade">
+      <div class="modal__card">
+        <h2 class="modal__title">Level up</h2>
+        <p class="modal__hint" id="upgrade-hint">Pick one upgrade.</p>
+        <div class="upgrade-list" id="upgrade-list"></div>
+        <button class="modal__close" id="upgrade-skip" type="button">Later</button>
+      </div>
+    </section>
+
+    <!-- Death: a full-screen dim with the respawn countdown. -->
+    <section class="death" id="death-screen" hidden aria-live="polite">
+      <div class="death__card">
+        <h2 class="death__title">Hull lost</h2>
+        <p class="death__text">Respawn in <b id="death-countdown">5</b>s</p>
+        <p class="death__sub" id="death-sub">Your progress is kept.</p>
       </div>
     </section>
 

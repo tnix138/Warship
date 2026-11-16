@@ -444,6 +444,32 @@ export function xpToNextLevel(xp: number): number {
   return Math.max(0, xpForLevel(level + 1) - Math.max(0, xp));
 }
 
+/**
+ * Position within the current level, for an XP bar.
+ *
+ * `intoLevel` is XP earned since the current level began and `span` is the width of the
+ * level, so `intoLevel / span` is the fill. At the cap both are equal and `fraction` is
+ * 1, which draws a full bar rather than dividing by zero.
+ */
+export function xpProgress(xp: number): {
+  readonly level: number;
+  readonly intoLevel: number;
+  readonly levelSpan: number;
+  readonly fraction: number;
+} {
+  const total = Number.isFinite(xp) ? Math.max(0, xp) : 0;
+  const level = levelFromXp(total);
+
+  const floorXp = xpForLevel(level);
+  const ceilXp = xpForLevel(level + 1);
+  const span = ceilXp - floorXp;
+
+  if (!(span > 0)) return { level, intoLevel: 0, levelSpan: 0, fraction: 1 };
+
+  const intoLevel = clamp(total - floorXp, 0, span);
+  return { level, intoLevel, levelSpan: span, fraction: intoLevel / span };
+}
+
 /* -------------------------------------------------------------------------- */
 /*  Loot & rewards                                                            */
 /* -------------------------------------------------------------------------- */

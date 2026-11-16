@@ -2,9 +2,12 @@ import {
   PING_GOOD_MS,
   PING_WARN_MS,
   SHIP_CLASSES,
+  UPGRADES,
+  xpProgress,
   type ConnectionState,
   type PlayerStateMessage,
   type ShipClass,
+  type UpgradeId,
   type WelcomeMessage,
 } from '@warship/shared';
 
@@ -61,6 +64,19 @@ export class GameHud {
   readonly #netLabel = document.getElementById('net-label');
   readonly #eventLog = document.getElementById('event-log');
 
+  readonly #xpFill = document.getElementById('xp-fill');
+  readonly #xpLabel = document.getElementById('stat-xp');
+  readonly #scrap = document.getElementById('stat-scrap');
+  readonly #points = document.getElementById('stat-points');
+  readonly #tier = document.getElementById('stat-tier');
+
+  readonly #upgradeModal = document.getElementById('upgrade-modal');
+  readonly #upgradeList = document.getElementById('upgrade-list');
+  readonly #upgradeHint = document.getElementById('upgrade-hint');
+
+  readonly #deathScreen = document.getElementById('death-screen');
+  readonly #deathCountdown = document.getElementById('death-countdown');
+
   #lastDebugUpdate = 0;
   #lastPrediction = {
     pending: 0,
@@ -78,6 +94,9 @@ export class GameHud {
   };
   #lastHpText = '';
   #lastNetLabel = '';
+  #lastXpText = '';
+  /** Upgrade points shown in the open modal, so a purchase can reopen it correctly. */
+  #modalPoints = 0;
 
   #maxHp = 1;
   #hp = 1;
@@ -129,6 +148,99 @@ export class GameHud {
     this.#renderHp();
     setText(this.#level, String(state.level));
     setText(this.#class, SHIP_CLASSES[state.shipClass].displayName);
+    this.#renderXp(state.xp);
+    setText(this.#scrap, String(state.scrap));
+    setText(this.#points, String(state.upgradePoints));
+    setText(this.#tier, String(state.hullTier));
+
+    /* Death is driven by the authoritative state, not by the local kill event: the
+       event can be dropped by a reconnecting socket, and a player stuck behind a death
+       overlay that never clears is worse than one who respawns without seeing it. */
+    if (state.dead === true) {
+      this.showDeath(state.respawnInS ?? 0);
+    } else {
+      this.hideDeath();
+    }
+  }
+
+  /**
+   * Show the upgrade picker.
+   *
+   * The server sends the choices; this only renders them. Offering an upgrade the server
+   * would refuse is the classic source of "I clicked it and nothing happened", so the
+   * list is filtered to what is actually purchasable right now.
+   */
+  showUpgrades(options: {
+    readonly points: number;
+    readonly offers: readonly { readonly upgradeId: UpgradeId; readonly rank: number }[];
+    readonly onChoose: (upgradeId: UpgradeId) => void;
+  }): void {
+    const modal = this.#upgradeModal;
+    const list = this.#upgradeList;
+    if (modal === null || list === null) return;
+
+    this.#modalPoints = options.points;
+    list.replaceChildren();
+
+    for (const offer of options.offers) {
+      /* An id can arrive from the wire that the type system believes exists but the
+         running build does not, if client and server are out of sync. */
+      if (!Object.hasOwn(UPGRADES, offer.upgradeId)) continue;
+      const definition = UPGRADES[offer.upgradeId];
+
+      const button = document.createElement('button');
+      button.type = 'button';
+      button.className = 'upgrade';
+
+      const name = document.createElement('span');
+      name.className = 'upgrade__name';
+      name.textContent = definition.displayName;
+
+      const desc = document.createElement('span');
+      desc.className = 'upgrade__desc';
+      desc.textContent = definition.description;
+
+      const rank = document.createElement('span');
+      rank.className = 'upgrade__rank';
+      rank.textContent = `rank ${String(offer.rank)} / ${String(definition.maxRank)}`;
+
+      button.append(name, desc, rank);
+      button.addEventListener('click', () => {
+        options.onChoose(offer.upgradeId);
+      });
+
+      list.append(button);
+    }
+
+    setText(
+      this.#upgradeHint,
+      options.points > 1
+        ? `Pick an upgrade — ${String(options.points)} points`
+        : 'Pick an upgrade.',
+    );
+    modal.hidden = false;
+  }
+
+  hideUpgrades(): void {
+    if (this.#upgradeModal !== null) this.#upgradeModal.hidden = true;
+  }
+
+  get upgradesOpen(): boolean {
+    return this.#upgradeModal !== null && !this.#upgradeModal.hidden;
+  }
+
+  /** Points the open modal was built for, so a purchase can re-offer the remainder. */
+  get modalPoints(): number {
+    return this.#modalPoints;
+  }
+
+  showDeath(respawnInS: number): void {
+    if (this.#deathScreen !== null) this.#deathScreen.hidden = false;
+    setText(this.#deathCountdown, String(Math.max(0, Math.ceil(respawnInS))));
+  }
+
+  hideDeath(): void {
+    if (this.#deathScreen !== null) this.#deathScreen.hidden = true;
   }
 
   /** Keep the bar honest between PLAYER_STATE frames by using the snapshot's hp. */
@@ -250,6 +362,9 @@ export class GameHud {
 
   destroy(): void {
     this.#eventLog?.replaceChildren();
+    this.#upgradeList?.replaceChildren();
+    this.hideUpgrades();
+    this.hideDeath();
   }
 
   /* ------------------------------------------------------------------------ */
@@ -274,6 +389,31 @@ export class GameHud {
     if (this.#hpBar) {
       this.#hpBar.setAttribute('aria-valuenow', String(Math.round(fraction * 100)));
     }
+  }
+
+  #renderXp(xp: number): void {
+    const progress = xpProgress(xp);
+    const text = `${Math.round(progress.intoLevel).toString()} / ${Math.round(progress.levelSpan).toString()}`;
+
+    if (text !== this.#lastXpText) {
+      setText(this.#xpLabel, text);
+      this.#lastXpText = text;
+    }
+
+    if (this.#xpFill !== null) {
+      const percent = progress.fraction * 100;
+      this.#xpFill.style.width = `${percent.toFixed(1)}%`;
+      this.#xpFill.parentElement?.setAttribute('aria-valuenow', String(Math.round(percent)));
+    }
+
+    /* The level badge comes from the state message, but it is worth asserting here that
+       the number on screen and the number the bar was computed from agree — a mismatch
+       means `xpProgress` and `xpForLevel` disagree, which is a shared-formula bug. */
+  }
+
+  /** Set the countdown text without re-showing an already-visible overlay. */
+  updateDeathCountdown(seconds: number): void {
+    setText(this.#deathCountdown, String(Math.max(0, Math.ceil(seconds))));
   }
 
   #setNetLabel(label: string): void {
