@@ -760,7 +760,12 @@ export class Loop {
           id: projectile.id,
           x: projectile.x,
           y: projectile.y,
-          rotation: 0,
+          /* The shot's heading, not 0. It was hardcoded to 0 on the reasoning that a
+             procedural dot doesn't need an angle — but the tracer is a *streak*, drawn
+             along the entity's local +x, so every shot on screen pointed due east no
+             matter which way it was actually travelling. `Projectile` already knows its
+             velocity, so the heading is one `atan2` and no new state. */
+          rotation: Math.atan2(projectile.vy, projectile.vx),
           hp: 1,
           kind: EntityKind.Projectile,
         }),

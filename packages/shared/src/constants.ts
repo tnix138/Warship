@@ -325,7 +325,14 @@ export const ZONES: readonly ZoneDefinition[] = [
   {
     id: ZoneId.Safe,
     displayName: 'Safe Waters',
-    radius: 1_000,
+    /* 1 400, not 1 000.
+       The safe zone has to be wider than the spawn clearance or it has no area left to
+       spawn in: the clearance is `SPAWN_RING_RADIUS + NPC_SPAWN_CLEARANCE` = 1 160, so a
+       1 000-unit zone collapsed every Coastal onto a single 1 000-unit circle. A zone the
+       player starts inside is the one place this matters most, because every ship packed
+       onto that circle was visible from spawn. Widening it also gives the safe zone an
+       actual interior to learn to steer in. */
+    radius: 1_400,
     pvp: false,
     xpMultiplier: 0.5,
     npcLevelRange: { min: 1, max: 3 },

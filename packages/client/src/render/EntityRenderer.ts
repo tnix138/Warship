@@ -85,6 +85,8 @@ interface ShipView {
 }
 
 export class EntityRenderer {
+  /* Draws hulls only: players and NPCs. Projectiles and crates belong to
+     `CombatRenderer`, and passing them here is what made shots look like ships. */
   readonly view = new Container();
 
   /**
@@ -118,6 +120,17 @@ export class EntityRenderer {
     const seen = new Set<string>();
 
     for (const pose of poses) {
+      /* Only hulls get a sprite. This loop used to take every pose it was handed, and
+         `Game` hands it the whole world, so a projectile — which is a 6-unit point with
+         no hull class — was drawn with a full 113 px ship texture. The result looked like
+         ships being fired out of cannons: every shot was a hull flying across the water,
+         with the little tracer streak hidden underneath it. Crates had the same problem.
+
+         `CombatRenderer` owns both of those kinds. The split is by kind, not by "who got
+         there first": players and NPCs are hulls with art, tier scaling, rings and bars;
+         projectiles and boxes are procedural shapes. */
+      if (pose.kind !== 'player' && pose.kind !== 'npc') continue;
+
       seen.add(pose.id);
       const view = this.#viewFor(pose);
       this.#apply(pose, view, now);

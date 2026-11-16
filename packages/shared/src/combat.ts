@@ -170,19 +170,38 @@ export const NPC_STATS: Readonly<Record<NpcTier, NpcStats>> = {
  */
 export const NPC_MAX_ALIVE = 50;
 
-/** How many NPCs the world tries to keep alive, per tier. Sums below the cap. */
+/**
+ * How many NPCs the world tries to keep alive, per tier. Sums below the cap.
+ *
+ * These are deliberately modest. The previous 24/16/8 kept 48 hulls alive in an
+ * 8 000 x 8 000 world, which sounds sparse and is not: every one of them was packed into
+ * its own zone, the safe zone is the smallest of the three, and the player spawns in the
+ * middle of it. A single 2400 x 1400 viewport around the spawn ring held twelve ships,
+ * and twenty of the twenty-four Coastals were inside a Coastal's detection radius of a
+ * freshly spawned player. The game read as a fleet battle because, from where the player
+ * stood, it was one.
+ *
+ * Density is what matters, not the global count, so these are set so that the zone the
+ * player starts in holds roughly a handful of ships rather than a wall of them.
+ */
 export const NPC_TARGET_COUNTS: Readonly<Record<NpcTier, number>> = {
-  [NpcTier.Small]: 24,
-  [NpcTier.Medium]: 16,
-  [NpcTier.Large]: 8,
+  [NpcTier.Small]: 12,
+  [NpcTier.Medium]: 8,
+  [NpcTier.Large]: 4,
 };
 
 /** Seconds a spawn slot waits after a kill before it is refilled. */
 export const NPC_RESPAWN_MIN_S = 30;
 export const NPC_RESPAWN_MAX_S = 60;
 
-/** Ticks between spawn-slot top-ups. Cheap enough to run once a second. */
-export const NPC_SPAWN_INTERVAL_TICKS = 20;
+/**
+ * Ticks between spawn-slot top-ups. Cheap enough to run every two seconds.
+ *
+ * Slower than the old once-a-second cadence on purpose: a kill should leave a hole in the
+ * zone for a while, both so a cleared area stays cleared long enough to notice and so the
+ * population cannot snap back to full inside one engagement.
+ */
+export const NPC_SPAWN_INTERVAL_TICKS = 40;
 
 /**
  * NPC behaviour states.
