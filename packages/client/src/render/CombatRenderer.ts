@@ -2,23 +2,24 @@ import { Container, Graphics } from 'pixi.js';
 
 import {
   BOX_COLORS,
-  NPC_TIER_COLORS,
   RENDER_PROJECTILE_TAIL_ALPHA,
   RENDER_PROJECTILE_TRAIL_LENGTH,
-  SHIP_CLASSES,
-  type NpcTier,
 } from '@warship/shared';
 
 import type { RenderEntity } from '../game/World';
 
 /**
- * Draws everything that is not a player hull: NPC ships, projectiles, loot boxes, and the
- * spawn-shield halo.
+ * Draws the things that are not hulls: shots and loot crates.
  *
  * Deliberately separate from `EntityRenderer`. That class pools a *sprite* per entity
- * because every player is a textured ship; this one draws with `Graphics` because the
- * three new kinds are procedural shapes with per-frame animation, and forcing them
- * through the sprite pool would mean inventing textures for a circle and a crate.
+ * because hulls are textured ships; this one draws with `Graphics` because a tracer and
+ * a crate are procedural shapes with per-frame animation, and forcing them through the
+ * sprite pool would mean inventing textures for them.
+ *
+ * The split is one owner per `kind`, and it is enforced at the top of `update` rather
+ * than left to the caller. Both classes used to accept whatever they were handed, and
+ * the result was that every shot was drawn as a full ship sprite *and* every NPC as a
+ * flat triangle underneath its own hull texture.
  *
  * Everything is pooled by entity id, so a busy fight allocates nothing per frame.
  */
@@ -50,7 +51,15 @@ export class CombatRenderer {
     const seen = new Set<string>();
 
     for (const pose of poses) {
-      if (pose.kind === 'player') continue; // the ship renderer owns those
+      /* NPCs belong to `EntityRenderer`: they have a hull texture, tier scaling, a tier
+         ring, a lock ring and a health bar, all of which that class already draws.
+
+         This renderer used to draw them as well, over an opaque triangle. Two things
+         were wrong with that and only one of them was cosmetic: the triangle sat on top
+         of the sprite so NPCs read as flat shapes rather than ships, and the shape was
+         never rotated, so an NPC's "bow" always pointed north while its sprite turned.
+         Keeping one owner per kind is what stops that from coming back. */
+      if (pose.kind !== 'projectile' && pose.kind !== 'box') continue;
 
       seen.add(pose.id);
       const existing = this.#views.get(pose.id);
@@ -63,6 +72,10 @@ export class CombatRenderer {
       }
 
       view.root.position.set(pose.x, pose.y);
+      /* The streak is drawn along local +x, so the root has to carry the shot's heading
+         or every tracer points due east. This is the only kind that needs a rotation:
+         crates spin on their own timer in `#drawBox`. */
+      view.root.rotation = pose.kind === 'projectile' ? pose.rotation : 0;
       view.root.alpha = pose.alpha;
       view.root.visible = pose.alpha > 0.01;
     }
@@ -104,10 +117,6 @@ export class CombatRenderer {
    */
   #signatureFor(pose: RenderEntity, now: number): string {
     switch (pose.kind) {
-      case 'npc': {
-        // Hull fraction matters because the bar length depends on it.
-        return `npc:${pose.npcTier ?? ''}:${Math.round(pose.hp)}:${Math.round(pose.shield * 10)}`;
-      }
       case 'projectile': {
         return `proj:${Math.round(pose.rotation * 100)}`;
       }
@@ -124,10 +133,6 @@ export class CombatRenderer {
     gfx.clear();
 
     switch (pose.kind) {
-      case 'npc': {
-        this.#drawNpc(pose, gfx);
-        break;
-      }
       case 'projectile': {
         this.#drawProjectile(gfx);
         break;
@@ -139,50 +144,6 @@ export class CombatRenderer {
       default: {
         break;
       }
-    }
-  }
-
-  /**
-   * An NPC: a tier-coloured hull triangle with an HP bar and, while invulnerable, a halo.
-   *
-   * The shape is drawn bow-up (`-y`) to match the ship textures, and the caller has
-   * already applied the `+π/2` rotation, so an NPC points where it is going exactly as a
-   * player hull does.
-   */
-  #drawNpc(pose: RenderEntity, gfx: Graphics): void {
-    const tier = pose.npcTier ?? 'small';
-    const color = NPC_TIER_COLORS[tier];
-    const radius = SHIP_CLASSES.normal.radius;
-
-    /* Hull. A blunt triangle reads as "warship" at a glance without a texture, and the
-       tier colour carries the threat level. */
-    gfx
-      .poly([0, -radius, radius * 0.8, radius * 0.7, 0, radius * 0.4, -radius * 0.8, radius * 0.7])
-      .fill({ color, alpha: 0.92 })
-      .poly([0, -radius, radius * 0.8, radius * 0.7, 0, radius * 0.4, -radius * 0.8, radius * 0.7])
-      .stroke({ color: 0x04121e, width: 1.5, alpha: 0.85 });
-
-    /* HP bar. Always drawn for an NPC, not only when damaged: a tier's hull pool is
-       large enough that "looks full" is misleading, and a target without a bar is hard
-       to prioritise. */
-    const maxHp = this.#maxHpForTier(tier);
-    const fraction = Math.max(0, Math.min(1, pose.hp / maxHp));
-    const width = 30;
-    const offsetY = -radius - 14;
-
-    gfx
-      .rect(-width / 2 - 1, offsetY - 1, width + 2, 5)
-      .fill({ color: 0x04121e, alpha: 0.75 })
-      .rect(-width / 2, offsetY, width * fraction, 3)
-      .fill({
-        color: fraction > 0.6 ? 0x5cc98a : fraction > 0.3 ? 0xf6c86b : 0xff6b6b,
-        alpha: 0.95,
-      });
-
-    if (pose.shield > 0) {
-      gfx
-        .circle(0, 0, radius + 8)
-        .stroke({ color: 0x7fd4ff, width: 2, alpha: 0.5 + 0.3 * Math.min(1, pose.shield) });
     }
   }
 
@@ -221,19 +182,5 @@ export class CombatRenderer {
 
     // A soft aura so a crate is findable against the water.
     gfx.circle(0, 0, size + 5 + pulse * 3).stroke({ color, width: 1, alpha: 0.25 + pulse * 0.2 });
-  }
-
-  #maxHpForTier(tier: NpcTier): number {
-    switch (tier) {
-      case 'medium': {
-        return 140;
-      }
-      case 'large': {
-        return 320;
-      }
-      default: {
-        return 60;
-      }
-    }
   }
 }

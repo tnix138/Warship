@@ -9,6 +9,7 @@ import {
   SPAWN_CENTER_X,
   SPAWN_CENTER_Y,
   SPAWN_RING_RADIUS,
+  TICK_RATE,
   WORLD_HEIGHT,
   WORLD_WIDTH,
   ZONES,
@@ -185,6 +186,18 @@ export class World {
     if (!this.npcSpawning) return;
     if (this.#tick % NPC_SPAWN_INTERVAL_TICKS !== 0) return;
 
+    /* Retire wrecks before counting. Nothing else ever removed an NPC from this map, so
+       every death left its record in the table for the life of the process. Measured on
+       the real loop: 960 kills grew it to 524 entries against a live population of 24.
+
+       Snapshots and AoI did filter on `isAlive`, so the wrecks were never *drawn* — the
+       cost was elsewhere and would have been mistaken for something else entirely.
+       `#aliveCount` walked every corpse on every spawn tick, `refreshGrid` rebuilt the
+       spatial index over all of them twenty times a second, and `npcs` is iterated in the
+       combat and death passes. A long session got slower in a way no profile of the
+       renderer would explain. */
+    this.#retireDeadNpcs();
+
     for (const tier of [NpcTier.Small, NpcTier.Medium, NpcTier.Large] as const) {
       const target = NPC_TARGET_COUNTS[tier];
       const alive = this.#aliveCount(tier);
@@ -193,6 +206,15 @@ export class World {
         if (this.npcCount >= NPC_MAX_ALIVE) return;
         this.#spawnNpc(tier);
       }
+    }
+  }
+
+  /** Drop NPC records that have been dead longer than their respawn delay. */
+  #retireDeadNpcs(): void {
+    for (const [id, npc] of this.npcs) {
+      if (npc.isAlive || npc.diedAtTick === null) continue;
+      if (this.#tick - npc.diedAtTick < npc.respawnDelayS * TICK_RATE) continue;
+      this.npcs.delete(id);
     }
   }
 
@@ -233,10 +255,20 @@ export class World {
        the exact place every new player appears. An NPC landing there is not merely unfair,
        it is invisible in the first second of a session: the camera is still settling, the
        player has not moved, and the fight starts before they know which way is up.
-       Pushing the sample outward keeps the zone populated without using it as a
-       spawning ground for ganks. */
+
+       Clamping the *sample* is what made the safe zone feel crowded. The safe annulus used
+       to be [0, 1000) while the clearance is 1160, so `min(keepClear, outer)` collapsed
+       every Coastal onto exactly radius 1000: not a band, a one-dimensional ring. Every
+       one of them shared a single circumference, and the golden-angle walk could not spread
+       them out because it only varied the *angle*. That is the wall of ships the player
+       saw from spawn. Resampling the remainder over [keepClear, outer) keeps the clearance
+       and restores the second dimension, so it does not matter that the zone is now wider
+       than the clearance — the arithmetic works either way. */
     const keepClear = SPAWN_RING_RADIUS + NPC_SPAWN_CLEARANCE;
-    if (radius < keepClear) radius = Math.min(keepClear, outer);
+    if (radius < keepClear && outer > keepClear) {
+      const span = outer * outer - keepClear * keepClear;
+      radius = Math.sqrt(keepClear * keepClear + hash01(`${tier}:${String(cursor)}:push`) * span);
+    }
 
     const x = SPAWN_CENTER_X + Math.cos(angle) * radius;
     const y = SPAWN_CENTER_Y + Math.sin(angle) * radius;
@@ -281,7 +313,9 @@ export class World {
   snapshotEntities(): {
     readonly players: readonly Player[];
     readonly npcs: readonly Npc[];
-    readonly projectiles: readonly { id: string; x: number; y: number }[];
+    /* `vx`/`vy` as well as a position: the snapshot needs the shot's heading, and
+       recomputing it in `Loop` from two successive positions would be a guess. */
+    readonly projectiles: readonly { id: string; x: number; y: number; vx: number; vy: number }[];
     readonly boxes: readonly { id: string; x: number; y: number }[];
   } {
     const players: Player[] = [];
@@ -296,9 +330,15 @@ export class World {
       npcs.push(npc);
     }
 
-    const projectiles: { id: string; x: number; y: number }[] = [];
+    const projectiles: { id: string; x: number; y: number; vx: number; vy: number }[] = [];
     for (const projectile of this.projectiles.live()) {
-      projectiles.push({ id: projectile.id, x: projectile.x, y: projectile.y });
+      projectiles.push({
+        id: projectile.id,
+        x: projectile.x,
+        y: projectile.y,
+        vx: projectile.vx,
+        vy: projectile.vy,
+      });
     }
 
     const boxes: { id: string; x: number; y: number }[] = [];
