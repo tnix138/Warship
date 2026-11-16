@@ -1,0 +1,499 @@
+:root {
+  --bg: #04121e;
+  --fg: #e6f2f7;
+  --muted: #8fb2c2;
+  --accent: #4fd1c5;
+  --danger: #ff6b6b;
+  --panel: rgba(6, 22, 33, 0.72);
+  --panel-border: rgba(79, 209, 197, 0.22);
+  --font: ui-monospace, 'SF Mono', 'JetBrains Mono', 'Cascadia Code', Menlo, Consolas, monospace;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  margin: 0;
+  height: 100%;
+  overflow: hidden;
+  background: var(--bg);
+  color: var(--fg);
+  font-family: var(--font);
+  font-size: 13px;
+  /* The canvas owns all pointer input; never let the page scroll or select. */
+  overscroll-behavior: none;
+  user-select: none;
+  -webkit-user-select: none;
+  touch-action: none;
+}
+
+#app {
+  position: fixed;
+  inset: 0;
+}
+
+#game-canvas {
+  display: block;
+  width: 100%;
+  height: 100%;
+}
+
+/* -------------------------------------------------------------------------- */
+/*  HUD                                                                       */
+/* -------------------------------------------------------------------------- */
+
+.hud {
+  position: fixed;
+  left: 0;
+  right: 0;
+  z-index: 10;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 14px;
+  pointer-events: none;
+  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.55);
+}
+
+.hud--top {
+  top: 0;
+  justify-content: space-between;
+}
+
+.hud--bottom {
+  bottom: 0;
+  justify-content: center;
+  color: var(--muted);
+  font-size: 11px;
+  letter-spacing: 0.02em;
+  gap: 18px;
+  padding-bottom: 12px;
+}
+
+.hud--debug {
+  top: 52px;
+  right: 14px;
+  left: auto;
+  display: grid;
+  gap: 2px;
+  padding: 10px 12px;
+  min-width: 168px;
+  background: var(--panel);
+  border: 1px solid var(--panel-border);
+  border-radius: 10px;
+  backdrop-filter: blur(6px);
+  -webkit-backdrop-filter: blur(6px);
+}
+
+.brand {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  letter-spacing: 0.14em;
+  text-transform: lowercase;
+}
+
+.brand__mark {
+  width: 10px;
+  height: 10px;
+  border-radius: 2px;
+  background: var(--accent);
+  box-shadow: 0 0 12px rgba(79, 209, 197, 0.8);
+}
+
+.brand__name {
+  font-weight: 700;
+  font-size: 14px;
+}
+
+.badge {
+  font-size: 10px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  padding: 2px 6px;
+  border-radius: 999px;
+  border: 1px solid var(--panel-border);
+  color: var(--muted);
+}
+
+.status {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: #6b7f8a;
+}
+
+.dot--offline {
+  background: #6b7f8a;
+}
+
+.dot--online {
+  background: var(--accent);
+  box-shadow: 0 0 10px rgba(79, 209, 197, 0.9);
+}
+
+.dot--error {
+  background: var(--danger);
+}
+
+.debug__row {
+  display: flex;
+  justify-content: space-between;
+  gap: 16px;
+  font-size: 11px;
+  line-height: 1.5;
+}
+
+.debug__row span {
+  color: var(--muted);
+}
+
+.debug__row b {
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  color: var(--accent);
+}
+
+kbd {
+  font-family: inherit;
+  font-size: 10px;
+  padding: 1px 5px;
+  border-radius: 4px;
+  border: 1px solid rgba(143, 178, 194, 0.35);
+  background: rgba(143, 178, 194, 0.08);
+  color: var(--fg);
+}
+
+/* -------------------------------------------------------------------------- */
+/*  Boot / error overlay                                                      */
+/* -------------------------------------------------------------------------- */
+
+#boot-error {
+  position: fixed;
+  inset: 0;
+  z-index: 50;
+  display: grid;
+  place-content: center;
+  gap: 8px;
+  padding: 24px;
+  text-align: center;
+  background: rgba(4, 18, 30, 0.94);
+  color: var(--fg);
+}
+
+#boot-error h1 {
+  font-size: 15px;
+  margin: 0;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--danger);
+}
+
+#boot-error pre {
+  margin: 0;
+  max-width: 70ch;
+  color: var(--muted);
+  font-size: 11px;
+  white-space: pre-wrap;
+  text-align: left;
+}
+
+@media (max-width: 640px) {
+  .hud--debug {
+    display: none;
+  }
+}
+
+/* ------------------------------------------------------------------------- */
+/*  Milestone 2: vitals, health bar, event log                                */
+/* ------------------------------------------------------------------------- */
+
+.hud--vitals {
+  left: 18px;
+  bottom: 74px;
+  min-width: 208px;
+  padding: 12px 14px;
+  border-radius: 12px;
+  background: rgb(4 18 30 / 72%);
+  border: 1px solid rgb(79 209 197 / 22%);
+  backdrop-filter: blur(6px);
+}
+
+.vitals__row {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+  font-size: 12px;
+  letter-spacing: 0.04em;
+  color: rgb(214 240 245 / 78%);
+}
+
+.vitals__row--sub {
+  margin-top: 8px;
+  font-size: 11px;
+  color: rgb(214 240 245 / 52%);
+}
+
+.vitals__label {
+  text-transform: uppercase;
+}
+
+.vitals__value {
+  font-variant-numeric: tabular-nums;
+  font-weight: 600;
+  color: #eafcff;
+}
+
+.hpbar {
+  position: relative;
+  height: 8px;
+  margin-top: 6px;
+  overflow: hidden;
+  border-radius: 999px;
+  background: rgb(255 255 255 / 10%);
+}
+
+.hpbar__fill {
+  height: 100%;
+  width: 0%;
+  border-radius: 999px;
+  background: #4fd1c5;
+  transition:
+    width 120ms linear,
+    background-color 200ms ease;
+}
+
+.hpbar__fill[data-level='warn'] {
+  background: #f6c86b;
+}
+
+.hpbar__fill[data-level='bad'] {
+  background: #ff6b6b;
+}
+
+/* XP: deliberately a different colour from the hull bar, and thinner. Two bars of the
+   same weight next to each other are read as one, and players misread XP as damage. */
+.xpbar {
+  position: relative;
+  height: 4px;
+  margin-top: 5px;
+  overflow: hidden;
+  border-radius: 999px;
+  background: rgb(255 255 255 / 8%);
+}
+
+.xpbar__fill {
+  height: 100%;
+  width: 0%;
+  border-radius: 999px;
+  background: linear-gradient(90deg, #7fb8ff, #a874e0);
+  transition: width 180ms ease-out;
+}
+
+/* -------------------------------------------------------------------------- */
+/*  Level-up modal                                                            */
+/* -------------------------------------------------------------------------- */
+
+.modal {
+  position: fixed;
+  inset: 0;
+  z-index: 20;
+  display: grid;
+  place-items: center;
+  background: rgb(4 18 30 / 62%);
+  backdrop-filter: blur(3px);
+}
+
+.modal[hidden] {
+  display: none;
+}
+
+.modal__card {
+  width: min(420px, 88vw);
+  padding: 20px 22px 18px;
+  border-radius: 14px;
+  background: #0a1f2e;
+  border: 1px solid rgb(127 184 255 / 30%);
+  box-shadow: 0 18px 48px rgb(0 0 0 / 55%);
+}
+
+.modal__title {
+  margin: 0 0 4px;
+  font-size: 18px;
+  font-weight: 650;
+  letter-spacing: 0.02em;
+  color: #eafcff;
+}
+
+.modal__hint {
+  margin: 0 0 14px;
+  font-size: 12px;
+  color: #9db4c0;
+}
+
+.upgrade-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.upgrade {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  width: 100%;
+  padding: 9px 12px;
+  text-align: left;
+  cursor: pointer;
+  border-radius: 9px;
+  background: rgb(127 184 255 / 8%);
+  border: 1px solid rgb(127 184 255 / 22%);
+  color: #eafcff;
+  font: inherit;
+  transition:
+    background 120ms ease,
+    border-color 120ms ease;
+}
+
+.upgrade:hover:not(:disabled),
+.upgrade:focus-visible {
+  background: rgb(127 184 255 / 16%);
+  border-color: rgb(127 184 255 / 48%);
+}
+
+.upgrade:disabled {
+  cursor: not-allowed;
+  opacity: 0.45;
+}
+
+.upgrade__name {
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.upgrade__desc {
+  font-size: 11px;
+  color: #9db4c0;
+}
+
+.upgrade__rank {
+  font-size: 11px;
+  color: #7fb8ff;
+  font-variant-numeric: tabular-nums;
+}
+
+.modal__close {
+  margin-top: 12px;
+  width: 100%;
+  padding: 7px;
+  cursor: pointer;
+  border-radius: 8px;
+  background: transparent;
+  border: 1px solid rgb(255 255 255 / 14%);
+  color: #9db4c0;
+  font: inherit;
+  font-size: 12px;
+}
+
+.modal__close:hover {
+  color: #eafcff;
+  border-color: rgb(255 255 255 / 28%);
+}
+
+/* -------------------------------------------------------------------------- */
+/*  Death screen                                                              */
+/* -------------------------------------------------------------------------- */
+
+.death {
+  position: fixed;
+  inset: 0;
+  z-index: 18;
+  display: grid;
+  place-items: center;
+  pointer-events: none;
+  background: radial-gradient(circle at center, rgb(90 10 20 / 28%), rgb(4 8 14 / 72%));
+}
+
+.death[hidden] {
+  display: none;
+}
+
+.death__card {
+  text-align: center;
+}
+
+.death__title {
+  margin: 0;
+  font-size: 26px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  color: #ff8a8a;
+  text-shadow: 0 2px 18px rgb(255 60 60 / 45%);
+}
+
+.death__text {
+  margin: 8px 0 2px;
+  font-size: 14px;
+  color: #eafcff;
+  font-variant-numeric: tabular-nums;
+}
+
+.death__sub {
+  margin: 0;
+  font-size: 12px;
+  color: #9db4c0;
+}
+
+.hud--events {
+  right: 18px;
+  bottom: 74px;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 4px;
+  pointer-events: none;
+}
+
+.hud-event {
+  padding: 5px 10px;
+  border-radius: 8px;
+  background: rgb(4 18 30 / 74%);
+  border: 1px solid rgb(79 209 197 / 18%);
+  font-size: 12px;
+  color: #d6f0f5;
+  animation: hud-event-in 180ms ease-out;
+}
+
+@keyframes hud-event-in {
+  from {
+    opacity: 0;
+    transform: translateY(4px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+.ping--good {
+  color: #4fd1c5;
+}
+
+.ping--warn {
+  color: #f6c86b;
+}
+
+.ping--bad {
+  color: #ff6b6b;
+}

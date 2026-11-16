@@ -1,0 +1,120 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta
+      name="viewport"
+      content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no"
+    />
+    <meta name="color-scheme" content="dark" />
+    <meta name="description" content="WarShip — a 2D online naval game for the browser." />
+    <title>warship</title>
+    <link
+      rel="icon"
+      href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%2304121e'/%3E%3Cpath d='M16 5l6 18-6-4-6 4z' fill='%234fd1c5'/%3E%3C/svg%3E"
+    />
+  </head>
+  <body>
+    <div id="app">
+      <canvas id="game-canvas" aria-label="WarShip game viewport"></canvas>
+    </div>
+
+    <header class="hud hud--top">
+      <div class="brand">
+        <span class="brand__mark" aria-hidden="true"></span>
+        <span class="brand__name">warship</span>
+        <span class="badge badge--muted" id="build-badge">milestone 2</span>
+      </div>
+      <div class="status">
+        <span class="dot dot--offline" id="net-dot" aria-hidden="true"></span>
+        <span id="net-label">offline</span>
+      </div>
+    </header>
+
+    <section class="hud hud--vitals" aria-label="Ship status">
+      <div class="vitals__row">
+        <span class="vitals__label">hull</span>
+        <span class="vitals__value" id="stat-hp">–</span>
+      </div>
+      <div class="hpbar" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0">
+        <div class="hpbar__fill" id="hp-fill" style="width: 0%"></div>
+      </div>
+      <div class="xpbar" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0">
+        <div class="xpbar__fill" id="xp-fill" style="width: 0%"></div>
+      </div>
+      <div class="vitals__row vitals__row--sub">
+        <span>level <b id="stat-level">1</b></span>
+        <span>xp <b id="stat-xp">0 / 100</b></span>
+        <span>class <b id="stat-class">–</b></span>
+      </div>
+      <div class="vitals__row vitals__row--sub">
+        <span>scrap <b id="stat-scrap">0</b></span>
+        <span>points <b id="stat-points">0</b></span>
+        <span>tier <b id="stat-tier">1</b></span>
+      </div>
+    </section>
+
+    <!-- Level-up: the server sends the choices, the client only renders them. -->
+    <section class="modal" id="upgrade-modal" hidden aria-label="Choose an upgrade">
+      <div class="modal__card">
+        <h2 class="modal__title">Level up</h2>
+        <p class="modal__hint" id="upgrade-hint">Pick one upgrade.</p>
+        <div class="upgrade-list" id="upgrade-list"></div>
+        <button class="modal__close" id="upgrade-skip" type="button">Later</button>
+      </div>
+    </section>
+
+    <!-- Death: a full-screen dim with the respawn countdown. -->
+    <section class="death" id="death-screen" hidden aria-live="polite">
+      <div class="death__card">
+        <h2 class="death__title">Hull lost</h2>
+        <p class="death__text">Respawn in <b id="death-countdown">5</b>s</p>
+        <p class="death__sub" id="death-sub">Your progress is kept.</p>
+      </div>
+    </section>
+
+    <aside class="hud hud--debug" id="debug-panel">
+      <div class="debug__row"><span>fps</span><b id="stat-fps">–</b></div>
+      <div class="debug__row debug__row--adv"><span>zoom</span><b id="stat-zoom">–</b></div>
+      <div class="debug__row debug__row--adv"><span>camera</span><b id="stat-camera">–</b></div>
+      <div class="debug__row"><span>entities</span><b id="stat-entities">0</b></div>
+      <div class="debug__row"><span>tick</span><b id="stat-tick">0</b></div>
+      <div class="debug__row debug__row--adv">
+        <span>interp buffer</span><b id="stat-buffered">0</b>
+      </div>
+      <div class="debug__row debug__row--adv">
+        <span>prediction err</span><b id="stat-prediction-error">0 units</b>
+      </div>
+      <div class="debug__row debug__row--adv"><span>pending</span><b id="stat-pending">0</b></div>
+      <div class="debug__row debug__row--adv">
+        <span>corrections</span><b id="stat-corrections">0</b>
+      </div>
+      <div class="debug__row debug__row--adv">
+        <span>offset x</span><b id="stat-offset-x">0 units</b>
+      </div>
+      <div class="debug__row debug__row--adv">
+        <span>offset rot</span><b id="stat-offset-rot">0 rad</b>
+      </div>
+      <div class="debug__row debug__row--adv">
+        <span>max offset</span><b id="stat-max-offset">0 units (last 60s)</b>
+      </div>
+      <div class="debug__row debug__row--adv">
+        <span>ease τ</span><b id="stat-ease-tau">80 ms</b>
+      </div>
+      <div class="debug__row"><span>input</span><b id="stat-input">–</b></div>
+      <div class="debug__row"><span>sent</span><b id="stat-sent">0</b></div>
+      <div class="debug__row debug__row--adv"><span>renderer</span><b id="stat-renderer">–</b></div>
+    </aside>
+
+    <div class="hud hud--events" id="event-log" aria-live="polite"></div>
+
+    <footer class="hud hud--bottom">
+      <span><kbd>WASD</kbd> steer</span>
+      <span><kbd>mouse</kbd> aim</span>
+      <span><kbd>click</kbd> / <kbd>space</kbd> fire</span>
+      <span><kbd>wheel</kbd> zoom</span>
+    </footer>
+
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>
