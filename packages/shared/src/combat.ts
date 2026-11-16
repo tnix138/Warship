@@ -83,6 +83,8 @@ export interface NpcStats {
   readonly turnRate: number;
   readonly range: number;
   readonly reloadTime: number;
+  /** Sustained shots per second. NPCs fire automatically, same as players. */
+  readonly fireRate: number;
   readonly radius: number;
   /** How far away the NPC notices a player, in world units. */
   readonly detectRadius: number;
@@ -112,6 +114,7 @@ export const NPC_STATS: Readonly<Record<NpcTier, NpcStats>> = {
        a light cruiser, so a playtest ends with the player wondering whether NPCs shoot
        at all. The threat has to be legible within one engagement. */
     reloadTime: 1.1,
+    fireRate: 0.9,
     radius: 16,
     detectRadius: 800,
     color: NPC_TIER_COLORS[NpcTier.Small],
@@ -131,6 +134,7 @@ export const NPC_STATS: Readonly<Record<NpcTier, NpcStats>> = {
     turnRate: 1.6,
     range: 620,
     reloadTime: 0.85,
+    fireRate: 1.18,
     radius: 20,
     detectRadius: 900,
     color: NPC_TIER_COLORS[NpcTier.Medium],
@@ -145,6 +149,7 @@ export const NPC_STATS: Readonly<Record<NpcTier, NpcStats>> = {
     turnRate: 1.2,
     range: 850,
     reloadTime: 1.4,
+    fireRate: 0.71,
     radius: 26,
     detectRadius: 1_000,
     color: NPC_TIER_COLORS[NpcTier.Large],

@@ -19,28 +19,28 @@ Open <http://localhost:5173>. Two tabs give you multiplayer.
 
 ## 2. What to check
 
-| #   | Check                    | Expected                                                | If it fails |
-| --- | ------------------------ | ------------------------------------------------------- | ----------- |
-| 1   | Status (top right)       | green dot, `online`, then `shard-0 · 20 Hz`             | §3          |
-| 2   | Hull bar (bottom left)   | fills to `140 / 140` for `normal`                       | §3          |
-| 3   | **WASD**                 | `W`/`S` throttle, `A`/`D` turn                          | §4.1        |
-| 4   | **Mouse aim**            | ship turns toward the cursor                            | §4.2        |
-| 5   | **Wheel**                | zooms in/out around the cursor                          | §4.3        |
-| 6   | Debug → `entities`       | `1` alone, `2` with a second tab nearby                 | §4.4        |
-| 7   | Debug → `tick`           | climbs ~20 per second                                   | §3          |
-| 8   | Debug → `interp buffer`  | `3 frames (100ms)`                                      | §4.6        |
-| 9   | Debug → `sent`           | climbs while you hold a key                             | §4.1        |
-| 10  | Debug → `input`          | `thr +1` / `turn -1` while holding keys                 | §4.1        |
-| 11  | **AoI**                  | sail away from the other tab; `entities` drops `2 → 1`  | §4.4        |
-| 12  | **Interpolation**        | the _other_ ship glides, no per-tick hopping            | §4.6        |
-| 13  | **Prediction**           | _your_ ship reacts on the frame you press the key       | §4.5        |
-| 14  | Debug → `prediction err` | under `1 unit`; a spike after a network hiccup is fine  | §4.8        |
-| 15  | Debug → `corrections`    | `0 (last 60s)` while driving normally                   | §4.8        |
-| 16  | **Buoys**                | amber/orange/white marks slide past you as you move     | §4.7        |
-| 17  | **Wake**                 | a short foam trail behind your own ship                 | §4.7        |
-| 18  | **Own-ship motion**      | your ship glides; it does not stutter at 20 Hz          | §4.5        |
-| 19  | Debug → `offset x`       | small, and returns to `0` within ~150 ms                | §4.9        |
-| 20  | Debug → `ease τ`         | `80 ms` normally; `150 ms` right after a big correction | §4.9        |
+| #   | Check                   | Expected                                                        | If it fails |
+| --- | ----------------------- | --------------------------------------------------------------- | ----------- |
+| 1   | Status (top right)      | green dot, `online`, then `shard-0 · 20 Hz`                     | §3          |
+| 2   | Hull bar (bottom left)  | fills to `140 / 140` for `normal`                               | §3          |
+| 3   | **WASD**                | `W`/`S` ahead/astern, `A`/`D` turn                              | §4.1        |
+| 4   | **Click an enemy**      | red ring + thick lock, a faint aim line; guns fire on their own | §4.2        |
+| 4b  | **Click empty water**   | lock drops, server goes back to the nearest enemy               | §4.2        |
+| 4c  | **NPC threat**          | scale 0.7/1.0/1.5 and a green/yellow/red ring, HP bar above     | §4.2        |
+| 5   | **Wheel**               | zooms in/out around the cursor                                  | §4.3        |
+| 6   | Debug → `entities`      | `1` alone, `2` with a second tab nearby                         | §4.4        |
+| 7   | Debug → `tick`          | climbs ~20 per second                                           | §3          |
+| 8   | Debug → `interp buffer` | `3 frames (100ms)`                                              | §4.6        |
+| 9   | Debug → `sent`          | climbs while you hold a key                                     | §4.1        |
+| 10  | Debug → `input`         | `thr +1` / `turn -1` while holding keys                         | §4.1        |
+| 11  | **AoI**                 | sail away from the other tab; `entities` drops `2 → 1`          | §4.4        |
+| 12  | **No interpolation**    | ships step at 20 Hz; this is expected, not a bug                | —           |
+| 13  | **No prediction**       | your ship moves one tick after the key press                    | —           |
+| 16  | **Buoys**               | amber/orange/white marks slide past you as you move             | §4.7        |
+| 17  | **Wake**                | a short foam trail behind your own ship                         | §4.7        |
+| 18  | **Own-ship motion**     | your ship glides; it does not stutter at 20 Hz                  | §4.5        |
+| 19  | Debug → `offset x`      | small, and returns to `0` within ~150 ms                        | §4.9        |
+| 20  | Debug → `ease τ`        | `80 ms` normally; `150 ms` right after a big correction         | §4.9        |
 
 Ship classes: `?ship=speed`, `?ship=normal`, `?ship=power`.
 Key-logging: `?debug=keys` (or `localStorage.warshipDebugKeys = '1'`).
@@ -161,14 +161,42 @@ is struggling on a loaded machine — usually harmless, but it explains jerky mo
 5. Shortcuts that hold Cmd/Ctrl/Alt are deliberately ignored, so browser shortcuts
    keep working. Release the modifier.
 
-### 4.2 Mouse aim does nothing
+### 4.2 Nothing gets shot / I cannot pick a target
 
-- The ship turns toward the cursor **only while the pointer is over the canvas**.
-  Move it off the canvas and the last known heading is kept.
-- Turn speed is capped (`turnRate × 2.5`), so a battleship takes a moment to come
-  about. That is deliberate, not lag.
-- `aim` is applied by the server — if `input` shows a value but the hull never
-  turns, restart the server (§3).
+There is no aim control and no trigger. Targeting and firing are entirely
+server-side; the client only sends steering and, on a click, an entity id.
+
+- **Guns only fire when the server has a target.** Auto-aim picks the nearest live
+  enemy inside your weapon range (600 / 800 / 1100 for speed / normal / power). If
+  nothing hostile is in range, the guns are correctly silent and no shot appears.
+- **A click only selects.** Clicking a hull sends `TARGET <id>`; clicking empty water
+  sends `TARGET null`, which hands targeting back to the nearest-enemy rule. The
+  selection is honoured only while the target is alive _and_ in range — both are
+  re-checked every tick, so a lock on a corpse or on a fleeing ship drops by itself.
+- **The ring tells you what the server decided.** The thick red ring and the faint
+  line come from the `targetId` on your own snapshot record, not from client maths,
+  so if they are absent the server genuinely has no target. Check `entities` and your
+  range before suspecting the renderer.
+- **The ring would not appear at all if `targetId` were dropped.** `roundEntity` in
+  `Loop.ts` rebuilds snapshot records; it has silently dropped fields before.
+
+### 4.2b NPC tier is unreadable
+
+Three cues, in order of visibility at distance:
+
+| Cue    | Coastal (Small) | Raider (Medium) | Warship (Large) |
+| ------ | --------------- | --------------- | --------------- |
+| Scale  | 0.7×            | 1.0×            | 1.5×            |
+| Ring   | green           | yellow          | red             |
+| HP bar | always shown    | always shown    | always shown    |
+
+The ring palette is **not** `NPC_TIER_COLORS` — those are the hull tints
+(green/orange/purple) and describe the faction. Reusing them here would make
+"medium" orange and "large" purple, which reads as nothing in particular mid-fight.
+
+Ring and bar radius come from the **texture**, not `SHIP_CLASSES[].radius`. That
+field is a collision radius (20 for a Normal hull) and the art is 113 px tall, so a
+ring drawn at `radius + 6` hides completely underneath the sprite.
 
 ### 4.3 Wheel does not zoom
 
@@ -189,27 +217,16 @@ AoI radius is **3000 units** on an 8000×8000 **wrapping** world.
 - So to see culling you must travel a _real_ 3000+ units, which is about 12 seconds
   at `normal` speed (240 u/s).
 
-### 4.5 Your own ship stutters / `corrections` keeps climbing
+### 4.5 Your own ship stutters
 
-Your ship and everyone else's are drawn by different machinery, so they fail
-differently:
+It will, slightly, and that is currently correct: prediction and interpolation were
+removed on purpose. Every ship is drawn at the pose from the last snapshot, so all
+of them advance at 20 Hz. There is no `corrections` counter any more because there
+is nothing that could need correcting.
 
-- **Your ship** is drawn from the _prediction_, which runs the same 20 Hz physics as
-  the server and blends between two ticks for display. It must move on every rendered
-  frame. If it visibly advances in steps, the blend is broken — not the network.
-- **Other ships** are drawn from the _interpolation buffer_, 100 ms behind. Their
-  smoothness depends on snapshots arriving; see §4.6.
-
-`corrections` counts disagreements between the prediction and the server:
-
-- `0 (last 60s)` while driving normally is the healthy state.
-- A handful after a network hiccup is expected: the client is being told what really
-  happened and eases the difference out over a few hundred milliseconds.
-- A large `max` (hundreds of units) means the two are running _different physics_.
-  There is only one movement implementation (`stepShipMotion` in `@warship/shared`),
-  so that almost always means the page and the server are on different builds — §3.
-- Errors above 64 units are snapped rather than eased, because easing a teleport looks
-  like the ship is on a rubber band.
+If smoothness is ever wanted back, the thing to add is interpolation of received
+snapshots — not client-side prediction of input, which is what used to disagree with
+the server.
 
 ### 4.6 Remote ships look jerky
 
@@ -241,30 +258,25 @@ past you. Three cues were added for that:
 If none of these appear, the world layer is not being added to the camera — check the
 console for a Pixi error rather than the network panel.
 
-### 4.8 Motion is smooth but the ship is in the wrong place
+### 4.8 The ship is in the wrong place
 
-That is the server disagreeing with the prediction, and it is what `prediction err` and
-`corrections` are for. A steadily climbing error means the two are running different
-physics: the shared `stepShipMotion` is the only movement implementation, so a large
-mismatch almost always means the page and the server are on different builds — §3.
+There is no prediction to disagree with any more: what you see is the last snapshot,
+verbatim. If a ship is misplaced, the server put it there — check `tick` is climbing
+and that the page and the server are on the same build (§3), because a stale server
+behind a fresh page is the only way the two can still disagree about the world.
 
-### 4.9 A correction is visible — which number explains it?
+### 4.9 Reading the debug panel
 
-Four rows exist purely for this. Read them in this order:
+The prediction-health rows (`offset x`, `offset rot`, `prediction err`,
+`corrections`, `ease tau`) still exist in the HUD but no longer update, because the
+machinery that produced them was deleted. What is still worth watching:
 
-| Row          | What it tells you                                                                                        |
-| ------------ | -------------------------------------------------------------------------------------------------------- |
-| `offset x`   | How far the drawn pose is displaced right now. Non-zero is normal; it falls to 0 within ~150 ms.         |
-| `offset rot` | The same displacement in angle. Large values mean the server and you disagree on heading, not position.  |
-| `max offset` | The worst displacement in the last minute. A steady climb means snapshots are arriving late or unevenly. |
-| `ease τ`     | Which time constant is in use: `80 ms` routine, `150 ms` once the offset passes 6 units.                 |
-
-If `offset x` spikes and takes noticeably longer than `ease τ` to return to 0, the
-network is dropping or delaying snapshots — check `interp buffer` (§4.6). If `offset x`
-stays near zero while the ship still stutters, the problem is not reconciliation at all
-and is worth reporting with the value of every row in this table.
-
----
+| Row        | What it tells you                                               |
+| ---------- | --------------------------------------------------------------- |
+| `tick`     | Climbing ~20/s means the world is simulating.                   |
+| `sent`     | Climbing means your input is reaching the server.               |
+| `input`    | `thr +1` / `turn -1` — what the client thinks it is asking for. |
+| `entities` | How many things are in your area of interest right now.         |
 
 ## 5. Headless checks (no browser needed)
 

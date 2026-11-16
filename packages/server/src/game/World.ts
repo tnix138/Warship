@@ -224,9 +224,19 @@ export class World {
 
     const inner = bounds.inner;
     const outer = Math.min(bounds.outer, WORLD_WIDTH / 2 - 120);
-    const radius = Math.sqrt(
+    let radius = Math.sqrt(
       inner * inner + hash01(`${tier}:${String(cursor)}`) * (outer * outer - inner * inner),
     );
+
+    /* Never spawn an NPC on top of the player spawn ring.
+       The safe zone's annulus starts at radius 0, so its inner edge is the world centre —
+       the exact place every new player appears. An NPC landing there is not merely unfair,
+       it is invisible in the first second of a session: the camera is still settling, the
+       player has not moved, and the fight starts before they know which way is up.
+       Pushing the sample outward keeps the zone populated without using it as a
+       spawning ground for ganks. */
+    const keepClear = SPAWN_RING_RADIUS + NPC_SPAWN_CLEARANCE;
+    if (radius < keepClear) radius = Math.min(keepClear, outer);
 
     const x = SPAWN_CENTER_X + Math.cos(angle) * radius;
     const y = SPAWN_CENTER_Y + Math.sin(angle) * radius;
@@ -318,6 +328,21 @@ export class World {
     ]);
   }
 }
+
+/**
+ * How far beyond the player spawn ring an NPC must appear.
+ *
+ * Not a balance number: it is the distance at which a newly spawned ship is not already
+ * inside an enemy's *detection* radius before its first frame has been drawn.
+ *
+ * 400 was not enough. A Coastal's weapon range is 430 and its detection radius is 800, so
+ * an NPC parked just outside the spawn ring was already inside the band where it wakes up
+ * and closes in — the player was under fire ~3 s after joining, which is exactly the
+ * window the spawn shield covers, so the shield expiring and the first volley landing
+ * were the same event. Clearing the detection radius is the honest number: below it, the
+ * NPC has decided to attack before the player has moved.
+ */
+const NPC_SPAWN_CLEARANCE = 900;
 
 /** Inner and outer radius of a zone's annulus, in world units. */
 function zoneBounds(zone: ZoneId): { inner: number; outer: number } {

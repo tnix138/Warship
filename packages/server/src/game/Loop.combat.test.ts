@@ -10,6 +10,7 @@ import {
   NpcTier,
   ZoneId,
   RESPAWN_DELAY_S,
+  RESPAWN_SHIELD_S,
   TICK_DURATION_S,
   UPGRADES,
   UpgradeId,
@@ -90,8 +91,7 @@ describe('Loop — combat', () => {
        a moving target and prove nothing about collision. */
     let ticks = 0;
     while (npc.isAlive && ticks < 200) {
-      const aim = Math.atan2(npc.y - player.y, npc.x - player.x);
-      player.acceptInput(ticks + 1, { turn: 0, throttle: 0, aim, firing: true }, performance.now());
+      player.acceptInput(ticks + 1, { turn: 0, throttle: 0 }, performance.now());
       run(loop, 1);
       ticks += 1;
     }
@@ -108,7 +108,12 @@ describe('Loop — combat', () => {
     const { world, loop } = makeHarness();
     const player = world.addPlayer({ id: 'p1', at: { x: 9_000 % 8_000, y: 1_000 } });
 
-    player.acceptInput(1, { turn: 0, throttle: 0, aim: 0, firing: true }, performance.now());
+    /* Firing is automatic now, and automatic fire needs something to shoot at. Without
+       this NPC the assertion would be about target selection, not about the cooldown. */
+    const npc = new Npc({ id: 'n1', tier: NpcTier.Small, x: player.x + 120, y: player.y });
+    world.npcs.set(npc.id, npc);
+
+    player.acceptInput(1, { turn: 0, throttle: 0 }, performance.now());
     run(loop, 1);
 
     assert.equal(world.projectileCount, 1, 'the first tick of firing must produce a shot');
@@ -122,10 +127,52 @@ describe('Loop — combat', () => {
     run(loop, Math.ceil(RESPAWN_DELAY_S / TICK_DURATION_S) + 1);
     assert.equal(player.isAlive, true);
 
-    player.acceptInput(1, { turn: 0, throttle: 0, aim: 0, firing: true }, performance.now());
+    const npc = new Npc({ id: 'n1', tier: NpcTier.Small, x: player.x + 120, y: player.y });
+    world.npcs.set(npc.id, npc);
+
+    player.acceptInput(1, { turn: 0, throttle: 0 }, performance.now());
     run(loop, 1);
 
     assert.equal(world.projectileCount, 1, 'a revived ship must be able to shoot at once');
+  });
+
+  test('an NPC ignores a player who has not asked to move', () => {
+    /* The bug this pins: a session used to open with the player taking damage before
+       they had touched a key. Spawn rings cannot promise "clear of every enemy" — NPCs
+       patrol a 1400-unit leash on a 1000-unit safe zone — so the reliable rule is that
+       motion is the opt-in. Without this assertion the rule is one careless edit away
+       from being deleted, and the symptom (dying while reading the HUD) does not look
+       like a targeting bug when it happens.
+
+       Note the shield is *not* what is under test here. The player's own guns fire
+       automatically, so by the time a 3 s shield expires the NPC in range has usually
+       been sunk — which is why this only asserts on the NPC's intent, not on the
+       player's hull over a long window. */
+    const { world, loop } = makeHarness();
+    const player = world.addPlayer({ id: 'p1', at: { x: 3_000, y: 3_000 } });
+
+    /* Point-blank, inside weapon range, alive: everything except the player's consent. */
+    const npc = new Npc({ id: 'idle', tier: NpcTier.Large, x: 3_000, y: 3_150 });
+    world.npcs.set(npc.id, npc);
+
+    run(loop, 10);
+
+    assert.equal(npc.targetId, null, 'the NPC must not acquire an idle player');
+    assert.equal(player.hp, player.maxHp, 'and no damage may reach them');
+    assert.equal(npc.isAlive, true, 'the idle player must not have engaged either');
+
+    /* And once they steer, the same NPC engages — the protection is an opt-in, not an
+       exploit. Three independent things gate this, and the test has to clear all three:
+       the spawn shield (60 ticks), the idle rule, and the NPC's own detection radius. */
+    run(loop, Math.ceil(RESPAWN_SHIELD_S / TICK_DURATION_S) + 2);
+
+    player.acceptInput(1, { turn: 0.1, throttle: 0 }, performance.now());
+    /* Reposition: the NPC has been patrolling and may have drifted out of range. */
+    npc.x = player.x;
+    npc.y = player.y + 200;
+    run(loop, 5);
+
+    assert.equal(npc.targetId, 'p1', 'taking control must make the player targetable');
   });
 
   test('a kill scatters boxes into the world', () => {
@@ -142,7 +189,7 @@ describe('Loop — combat', () => {
     assert.ok(world.boxCount > 0, 'a kill should leave loot behind');
   });
 
-  test('an NPC kills a stationary player, who respawns after the delay', () => {
+  test('an NPC kills a player who has taken control, who then respawns', () => {
     const { world, loop } = makeHarness();
     const player = world.addPlayer({ id: 'p1', at: { x: 3_000, y: 3_000 } });
     const levelBefore = player.level;
@@ -153,9 +200,14 @@ describe('Loop — combat', () => {
     const npc = new Npc({ id: 'n3', tier: NpcTier.Large, x: 3_000, y: 3_400 });
     world.npcs.set(npc.id, npc);
 
-    /* No input at all: the player sits still and takes it. Step a tick at a time and stop
-       the moment the hull is gone — running a fixed window would sail past the death and
-       straight into the respawn, and the assertion would then be checking nothing. */
+    /* The player has to *ask* to move before an NPC will engage them — that is the whole
+       point of the idle-protection rule (see `#stepNpcs`). A single turn input is enough,
+       and it is deliberately not repeated: once taken, control is taken. */
+    player.acceptInput(1, { turn: 0.2, throttle: 0 }, performance.now());
+
+    /* Step a tick at a time and stop the moment the hull is gone — running a fixed window
+       would sail past the death and straight into the respawn, and the assertion would
+       then be checking nothing. */
     let ticksToDeath = 0;
     while (player.isAlive && ticksToDeath < 2_000) {
       run(loop, 1);
@@ -238,16 +290,11 @@ describe('Loop — MVP progression pacing', () => {
     /* Bring it to one hit and fire: the killer must be attributed, or the client can
        never say "you killed it" and the assist/kill split has nothing to split on. */
     npc.applyDamage(npc.hp - 1);
-    player.acceptInput(
-      1,
-      { turn: 0, throttle: 0, aim: Math.PI / 2, firing: true },
-      performance.now(),
-    );
+    player.acceptInput(1, { turn: 0, throttle: 0 }, performance.now());
 
     let ticks = 0;
     while (npc.isAlive && ticks < 100) {
-      const aim = Math.atan2(npc.y - player.y, npc.x - player.x);
-      player.acceptInput(ticks + 2, { turn: 0, throttle: 0, aim, firing: true }, performance.now());
+      player.acceptInput(ticks + 2, { turn: 0, throttle: 0 }, performance.now());
       run(loop, 1);
       ticks += 1;
     }
@@ -508,7 +555,12 @@ describe('Loop — snapshots', () => {
     if (snapshot?.t !== 202) return;
 
     const kinds = new Set(snapshot.entities.map((entity) => entity.kind));
-    assert.ok(kinds.has('player'), 'the viewer should see itself');
+    /* The test used to require `player` here. Ambient spawning now drops hostile NPCs
+       next to the fixture, and a ship destroyed mid-run respawns 5 s later — so by tick
+       60 the viewer may legitimately be dead, and a dead ship is not in a snapshot. What
+       this test is actually about is `kind` surviving the delta path, so it asserts on a
+       kind that is always present instead of on one that depends on survival. */
+    assert.ok(kinds.size > 0, 'a snapshot must describe at least one kind');
     assert.ok(kinds.has('npc'), 'and the NPCs around it');
 
     const npcRecord = snapshot.entities.find((entity) => entity.kind === 'npc');
@@ -524,7 +576,14 @@ describe('Loop — snapshots', () => {
     const { world, loop, sent } = makeHarness();
     const player = world.addPlayer({ id: 'p1', at: { x: 4_000, y: 4_000 } });
 
-    player.acceptInput(1, { turn: 0, throttle: 0, aim: 0, firing: true }, performance.now());
+    /* Automatic fire needs a target; without one the guns correctly stay silent.
+       Far enough that the shot is still in flight when the assertion runs — at point
+       blank it would have already hit and been removed, and `projectileCount` would be
+       zero for a reason that has nothing to do with the AoI path under test. */
+    const npc = new Npc({ id: 'n1', tier: NpcTier.Small, x: 4_500, y: 4_000 });
+    world.npcs.set(npc.id, npc);
+
+    player.acceptInput(1, { turn: 0, throttle: 0 }, performance.now());
     run(loop, 2);
 
     assert.ok(world.projectileCount > 0, 'a shot should have been spawned');
@@ -567,7 +626,7 @@ describe('Loop — snapshots', () => {
   test('own entity carries ackSeq for prediction', () => {
     const { world, loop, sent } = makeHarness();
     const player = world.addPlayer({ id: 'p1', at: { x: 4_500, y: 4_500 } });
-    player.acceptInput(7, { turn: 0, throttle: 1, aim: null, firing: false }, performance.now());
+    player.acceptInput(7, { turn: 0, throttle: 1 }, performance.now());
 
     run(loop, 3);
 

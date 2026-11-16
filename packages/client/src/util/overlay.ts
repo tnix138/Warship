@@ -2,6 +2,10 @@
  * A hard failure (no WebGL, missing asset, broken module) must be visible instead of
  * leaving the player with a black screen. This turns any uncaught error into a
  * readable overlay with the message and stack.
+ *
+ * The heading is Persian because a player may be looking at it; the body is left in
+ * English because it is a stack trace, and a translated stack trace is useless to
+ * whoever has to read it.
  */
 
 let installed = false;
@@ -28,7 +32,7 @@ export function installErrorOverlay(): void {
 
   window.addEventListener('error', (event) => {
     show(
-      'client error',
+      'خطای کلاینت',
       event.error instanceof Error ? (event.error.stack ?? event.message) : event.message,
     );
   });
@@ -36,7 +40,7 @@ export function installErrorOverlay(): void {
   window.addEventListener('unhandledrejection', (event) => {
     const reason: unknown = event.reason;
     show(
-      'unhandled rejection',
+      'خطای پیش‌بینی‌نشده',
       reason instanceof Error ? (reason.stack ?? reason.message) : String(reason),
     );
   });

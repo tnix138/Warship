@@ -84,7 +84,7 @@ export function isSnapshot(message: ServerMessage): message is SnapshotMessage {
 
 /** Build a zeroed input frame; the caller fills in what it read from the devices. */
 export function neutralInput(): InputFrame {
-  return { turn: 0, throttle: 0, aim: null, firing: false };
+  return { turn: 0, throttle: 0 };
 }
 
 /** Clamp an input value to the range the server accepts. */

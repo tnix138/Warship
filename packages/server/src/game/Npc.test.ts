@@ -10,6 +10,7 @@ import {
   WORLD_WIDTH,
 } from '@warship/shared';
 
+import { canFire } from './Targeting.js';
 import { Npc } from './Npc.js';
 
 /**
@@ -32,7 +33,7 @@ function targetAt(dx: number, dy = 0): { id: string; x: number; y: number } {
 describe('Npc — state machine', () => {
   test('idles in Patrol with no target in range', () => {
     const npc = new Npc({ id: 'n1', tier: NpcTier.Small, x: 0, y: 0 });
-    npc.step(1, []);
+    npc.step([]);
 
     assert.equal(npc.state, NpcState.Patrol);
     assert.equal(npc.targetId, null);
@@ -43,7 +44,7 @@ describe('Npc — state machine', () => {
 
     // The Coastal detects at 800 and engages at 430; 600 is inside the first, outside
     // the second, so the answer must be Chase and not Engage.
-    npc.step(1, [targetAt(600)]);
+    npc.step([targetAt(600)]);
 
     assert.equal(npc.state, NpcState.Chase);
     assert.equal(npc.targetId, 'player-1');
@@ -51,7 +52,7 @@ describe('Npc — state machine', () => {
 
   test('ignores a player outside the detection radius', () => {
     const npc = new Npc({ id: 'n3', tier: NpcTier.Small, x: 0, y: 0 });
-    npc.step(1, [targetAt(NPC_STATS[NpcTier.Small].detectRadius + 50)]);
+    npc.step([targetAt(NPC_STATS[NpcTier.Small].detectRadius + 50)]);
 
     assert.equal(npc.state, NpcState.Patrol);
     assert.equal(npc.targetId, null);
@@ -59,14 +60,14 @@ describe('Npc — state machine', () => {
 
   test('engages once inside weapon range', () => {
     const npc = new Npc({ id: 'n4', tier: NpcTier.Small, x: 0, y: 0 });
-    npc.step(1, [targetAt(NPC_STATS[NpcTier.Small].range * 0.5)]);
+    npc.step([targetAt(NPC_STATS[NpcTier.Small].range * 0.5)]);
 
     assert.equal(npc.state, NpcState.Engage);
   });
 
   test('picks the nearest of several targets', () => {
     const npc = new Npc({ id: 'n5', tier: NpcTier.Small, x: 0, y: 0 });
-    npc.step(1, [
+    npc.step([
       { id: 'far', x: 700, y: 0 },
       { id: 'near', x: 300, y: 0 },
     ]);
@@ -80,10 +81,10 @@ describe('Npc — state machine', () => {
        escaping should switch it. */
     const npc = new Npc({ id: 'n6', tier: NpcTier.Medium, x: 0, y: 0 });
 
-    npc.step(1, [targetAt(600)]);
+    npc.step([targetAt(600)]);
     assert.equal(npc.targetId, 'player-1');
 
-    npc.step(2, [
+    npc.step([
       { id: 'player-1', x: 600, y: 0 },
       { id: 'player-2', x: 200, y: 0 },
     ]);
@@ -92,10 +93,10 @@ describe('Npc — state machine', () => {
 
   test('returns to patrol when the target leaves the give-up radius', () => {
     const npc = new Npc({ id: 'n7', tier: NpcTier.Small, x: 0, y: 0 });
-    npc.step(1, [targetAt(500)]);
+    npc.step([targetAt(500)]);
     assert.equal(npc.state, NpcState.Chase);
 
-    npc.step(2, [targetAt(2_000)]);
+    npc.step([targetAt(2_000)]);
     assert.equal(npc.state, NpcState.Patrol);
     assert.equal(npc.targetId, null);
   });
@@ -104,9 +105,9 @@ describe('Npc — state machine', () => {
     const npc = new Npc({ id: 'n8', tier: NpcTier.Small, x: 0, y: 0 });
     npc.kill(1);
 
-    const intent = npc.step(2, [targetAt(100)]);
+    const intent = npc.step([targetAt(100)]);
     assert.equal(intent.throttle, 0);
-    assert.equal(intent.firing, false);
+    assert.equal(intent.wantsToFire, false);
     assert.equal(npc.state, NpcState.Dead);
   });
 });
@@ -115,37 +116,53 @@ describe('Npc — firing', () => {
   test('fires once reloaded and pointing at the target', () => {
     const npc = new Npc({ id: 'f1', tier: NpcTier.Small, x: 0, y: 0, rotation: 0 });
     // Directly ahead, well inside range, so the hull is already aligned.
-    const intent = npc.step(1, [targetAt(200)]);
+    const intent = npc.step([targetAt(200)]);
 
-    assert.equal(intent.firing, true);
+    assert.equal(intent.wantsToFire, true);
   });
 
-  test('does not fire while the reload is ticking', () => {
+  test('still asks to fire while the reload is ticking, because gating moved to the loop', () => {
     const npc = new Npc({ id: 'f2', tier: NpcTier.Small, x: 0, y: 0, rotation: 0 });
-    const first = npc.step(1, [targetAt(200)]);
-    assert.equal(first.firing, true);
+    const first = npc.step([targetAt(200)]);
+    assert.equal(first.wantsToFire, true);
     npc.lastFiredTick = 1;
 
-    // The Coastal reloads in 1.1 s = 22 ticks; one tick later it must still be empty.
-    const second = npc.step(2, [targetAt(200)]);
-    assert.equal(second.firing, false);
+    /* Deliberately changed. The AI used to consult its own reload clock, which meant the
+       weapon rule lived in two places and could drift between factions. Now the AI only
+       says "I would fire" and `canFire` is the single gate the loop applies to players
+       and NPCs alike — so a winding-down gun still reports the wish. */
+    const second = npc.step([targetAt(200)]);
+    assert.equal(second.wantsToFire, true);
+    assert.equal(
+      canFire({
+        tick: 2,
+        lastFiredTick: 1,
+        reloadTime: NPC_STATS[NpcTier.Small].reloadTime,
+        fireRate: NPC_STATS[NpcTier.Small].fireRate,
+        tickDurationS: TICK_DURATION_S,
+      }),
+      false,
+      'the loop must refuse the shot, not the AI',
+    );
   });
 
   test('does not fire with the bow pointing away from the target', () => {
     const npc = new Npc({ id: 'f3', tier: NpcTier.Small, x: 0, y: 0, rotation: Math.PI });
-    const intent = npc.step(1, [targetAt(200)]);
+    const intent = npc.step([targetAt(200)]);
 
-    assert.equal(intent.firing, false);
+    assert.equal(intent.wantsToFire, false);
   });
 
   test('fires again after the full reload time', () => {
     const npc = new Npc({ id: 'f4', tier: NpcTier.Small, x: 0, y: 0, rotation: 0 });
-    npc.step(1, [targetAt(200)]);
+    npc.step([targetAt(200)]);
     npc.lastFiredTick = 1;
 
-    const reloadTicks = Math.round(NPC_STATS[NpcTier.Small].reloadTime / TICK_DURATION_S);
-    const intent = npc.step(1 + reloadTicks, [targetAt(200)]);
-    assert.equal(intent.firing, true);
+    /* The AI no longer knows about reload at all: it says "I would fire" and the loop
+       applies the gate. What this pins is that a fresh intent is still returned after
+       time has passed, i.e. that the decision is not latched. */
+    const intent = npc.step([targetAt(200)]);
+    assert.equal(intent.wantsToFire, true);
   });
 });
 
@@ -154,7 +171,7 @@ describe('Npc — movement and world', () => {
     const npc = new Npc({ id: 'm1', tier: NpcTier.Medium, x: 0, y: 0 });
     const before = { x: npc.x, y: npc.y };
 
-    for (let tick = 1; tick <= 40; tick += 1) npc.step(tick, [targetAt(700)]);
+    for (let tick = 1; tick <= 40; tick += 1) npc.step([targetAt(700)]);
 
     const moved = Math.hypot(npc.x - before.x, npc.y - before.y);
     assert.ok(moved > 0, 'the NPC should have closed some distance');
@@ -166,7 +183,7 @@ describe('Npc — movement and world', () => {
     const maxStep = NPC_STATS[NpcTier.Medium].maxSpeed * TICK_DURATION_S + 0.5;
 
     for (let tick = 1; tick <= 60; tick += 1) {
-      npc.step(tick, [targetAt(700)]);
+      npc.step([targetAt(700)]);
       const step = Math.hypot(npc.x - previous.x, npc.y - previous.y);
       assert.ok(step <= maxStep, `tick ${String(tick)} moved ${step.toFixed(1)} units`);
       previous = { x: npc.x, y: npc.y };
@@ -178,7 +195,7 @@ describe('Npc — movement and world', () => {
        7 980. An NPC that measured distance naively would never notice a player on the
        other side of the seam, and the seam would become a safe camping spot. */
     const npc = new Npc({ id: 'm3', tier: NpcTier.Medium, x: WORLD_WIDTH - 40, y: 0 });
-    npc.step(1, [{ id: 'player-1', x: 10, y: 0 }]);
+    npc.step([{ id: 'player-1', x: 10, y: 0 }]);
 
     /* 50 units apart, which is inside weapon range — so Engage, not Chase. The point is
        that the NPC noticed at all: a naive straight-line distance would report 7 980 and
@@ -189,7 +206,7 @@ describe('Npc — movement and world', () => {
   test('stays inside the world bounds', () => {
     const npc = new Npc({ id: 'm4', tier: NpcTier.Small, x: WORLD_WIDTH - 5, y: WORLD_HEIGHT - 5 });
 
-    for (let tick = 1; tick <= 100; tick += 1) npc.step(tick, [targetAt(400, 400)]);
+    for (let tick = 1; tick <= 100; tick += 1) npc.step([targetAt(400, 400)]);
 
     assert.ok(npc.x >= 0 && npc.x < WORLD_WIDTH, `x out of bounds: ${npc.x}`);
     assert.ok(npc.y >= 0 && npc.y < WORLD_HEIGHT, `y out of bounds: ${npc.y}`);

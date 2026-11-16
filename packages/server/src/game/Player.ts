@@ -65,6 +65,28 @@ export class Player {
   /** Tick this player respawned on; used by the spawn shield and by the HUD. */
   respawnedAtTick: number | null = null;
 
+  /**
+   * Whether the player has ever asked to move.
+   *
+   * Distinct from "is moving now": a player who held W and then stopped has taken
+   * responsibility for their ship, while one who has not sent a single throttle or turn
+   * request is still sitting where the server put them. NPCs ignore the latter, which is
+   * what stops a session from opening with a fight the player never opted into.
+   */
+  hasTakenControl = false;
+
+  /**
+   * Target the player asked for by clicking, or `null` for automatic.
+   *
+   * A *request*. It is re-validated against range and liveness every tick and cleared
+   * the moment it stops qualifying, so a stale id can never keep the guns pointed at
+   * something the player can no longer see.
+   */
+  manualTargetId: string | null = null;
+
+  /** Target the server actually chose this tick. `null` means the guns are silent. */
+  targetId: string | null = null;
+
   /* --- progression --- */
   level: number;
   xp: number;
@@ -106,7 +128,14 @@ export class Player {
     this.speed = 0;
 
     this.lastFiredTick = null;
-    this.shieldUntilTick = 0;
+    /* A brand-new ship gets the same spawn shield a respawned one does.
+       This used to be `0`, meaning "no protection", while `respawn()` granted
+       `RESPAWN_SHIELD_S`. The effect was that a player who had just joined could be shot
+       before they had touched a key — and since the first area outside the safe ring is
+       populated by NPCs that were already there, they often were. A death on the first
+       tick of a session is indistinguishable from a broken game, and the shield already
+       existed; it just was never granted on the path everyone actually takes. */
+    this.shieldUntilTick = options.tick + Math.round(RESPAWN_SHIELD_S / TICK_DURATION_S);
     this.level = STARTING_LEVEL;
     this.xp = STARTING_XP;
     this.scrap = STARTING_SCRAP;
@@ -154,6 +183,7 @@ export class Player {
     this.lastInputSeq = seq;
     this.intent = intent;
     this.lastInputAt = now;
+    if (intent.throttle !== 0 || intent.turn !== 0) this.hasTakenControl = true;
     return true;
   }
 
@@ -187,6 +217,10 @@ export class Player {
       hp: this.hp,
       shipClass: this.shipClass,
       kind: EntityKind.Player,
+      /* Sent so the client can ring the enemy the server picked, rather than guessing.
+         Always present (including `null`) because "no target" is a meaningful change the
+         client has to be able to see. */
+      targetId: this.targetId,
       ...(shield > 0 ? { shield } : {}),
     };
   }
@@ -197,6 +231,10 @@ export class Player {
     this.diedAtTick = tick;
     this.speed = 0;
     this.intent = null;
+    /* A dead ship has no guns, so it must not keep a lock: leaving `targetId` set would
+       draw a targeting ring around an enemy for the whole respawn countdown. */
+    this.targetId = null;
+    this.manualTargetId = null;
   }
 
   /** Bring a dead player back at a spawn point with a shield, keeping progression. */

@@ -4,8 +4,12 @@ import { inputDebugEnabled, type InputFrame } from '@warship/shared';
  * Keyboard + mouse input.
  *
  * Produces an `InputFrame` — a pure *intent*: the server decides what actually
- * happens to the ship. W/A/S/D (and arrow keys) steer, the pointer sets the aim
- * angle, the mouse button holds the trigger.
+ * happens to the ship. W/S is ahead/astern, A/D is turn. The mouse no longer steers
+ * and no longer fires: a click only *selects* an enemy (or, on empty water, clears the
+ * selection and hands targeting back to the server's automatic pick).
+ *
+ * Firing itself is entirely server-side. There is no trigger to hold, so there is no
+ * `firing` field to send and nothing for a client to lie about.
  *
  * ## Why keys are read from `event.code`, not `event.key`
  *
@@ -72,7 +76,16 @@ export class InputController {
 
   /** Screen-space pointer, kept for the caller to project into world space. */
   readonly pointer = { x: 0, y: 0, inside: false };
-  #firing = false;
+
+  /**
+   * Clicks the player made that a caller still has to turn into a target.
+   *
+   * Queued rather than handled here because resolving "what is under the cursor"
+   * needs the camera and the snapshot, neither of which this class knows about. The
+   * queue means a click is never dropped just because the frame that would have read
+   * it was slow.
+   */
+  readonly #clicks: { x: number; y: number }[] = [];
 
   /** Held actions, so a key repeat cannot double-count. */
   readonly #actions = new Set<Action>();
@@ -98,7 +111,6 @@ export class InputController {
 
     canvas.addEventListener('pointermove', this.#onPointerMove);
     canvas.addEventListener('pointerdown', this.#onPointerDown);
-    canvas.addEventListener('pointerup', this.#onPointerUp);
     canvas.addEventListener('pointerleave', this.#onPointerLeave);
     canvas.addEventListener('contextmenu', this.#onContextMenu);
   }
@@ -111,19 +123,25 @@ export class InputController {
 
     this.#canvas.removeEventListener('pointermove', this.#onPointerMove);
     this.#canvas.removeEventListener('pointerdown', this.#onPointerDown);
-    this.#canvas.removeEventListener('pointerup', this.#onPointerUp);
     this.#canvas.removeEventListener('pointerleave', this.#onPointerLeave);
     this.#canvas.removeEventListener('contextmenu', this.#onContextMenu);
   }
 
-  /** Current intent. `aim` is the world-space angle the caller computed. */
-  snapshot(aim: number | null): InputFrame {
+  /** Current intent. Only steering is sent: see the class comment. */
+  snapshot(): InputFrame {
     return {
       turn: this.#turn(),
       throttle: this.#throttle(),
-      aim,
-      firing: this.#firing,
     };
+  }
+
+  /**
+   * Clicks since the last call, in screen space, oldest first.
+   *
+   * Draining on read keeps a slow frame from replaying the same click twice.
+   */
+  drainClicks(): { x: number; y: number }[] {
+    return this.#clicks.splice(0, this.#clicks.length);
   }
 
   /** True while any of the WASD/arrow keys is held — used to skip idle work. */
@@ -169,7 +187,6 @@ export class InputController {
     if (event.code === 'Space' || event.key === ' ') {
       // Space would otherwise scroll the page — and the game has no page to scroll.
       event.preventDefault();
-      this.#firing = true;
     }
   };
 
@@ -181,13 +198,10 @@ export class InputController {
         console.info('[INPUT] keyup', { code: event.code, key: event.key, action });
       }
     }
-
-    if (event.code === 'Space' || event.key === ' ') this.#firing = false;
   };
 
   #onBlur = (): void => {
     this.#actions.clear();
-    this.#firing = false;
   };
 
   #onPointerMove = (event: PointerEvent): void => {
@@ -201,11 +215,12 @@ export class InputController {
     // A click is the user's most explicit "I am playing now" signal: take focus so
     // nothing else on the page can intercept keystrokes.
     this.#canvas.focus();
-    if (event.button === 0) this.#firing = true;
-  };
 
-  #onPointerUp = (event: PointerEvent): void => {
-    if (event.button === 0) this.#firing = false;
+    /* Left click only, and only as a *selection*. The coordinates are already canvas
+       relative, so the caller can project them without knowing about layout. */
+    if (event.button !== 0) return;
+    const rect = this.#canvas.getBoundingClientRect();
+    this.#clicks.push({ x: event.clientX - rect.left, y: event.clientY - rect.top });
   };
 
   #onPointerLeave = (): void => {

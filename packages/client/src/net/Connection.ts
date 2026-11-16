@@ -189,6 +189,16 @@ export class Connection {
     this.#send({ v: PROTOCOL_VERSION, t: MessageType.INPUT, seq, tick, input });
   }
 
+  /**
+   * Ask the server to hold a lock on one enemy, or `null` to go back to automatic.
+   *
+   * Fire-and-forget like every other intent: the server re-checks range and liveness
+   * every tick, so this cannot be used to shoot through a wall or at a corpse.
+   */
+  sendTarget(entityId: string | null): void {
+    this.#send({ v: PROTOCOL_VERSION, t: MessageType.TARGET, entityId });
+  }
+
   /** Request a loot box. */
   sendPickup(boxId: string): void {
     this.#send({ v: PROTOCOL_VERSION, t: MessageType.PICKUP, boxId });

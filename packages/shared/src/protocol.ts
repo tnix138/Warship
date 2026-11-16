@@ -33,6 +33,7 @@ export const MessageType = {
   INPUT: 102,
   PICKUP: 103,
   UPGRADE: 104,
+  TARGET: 105,
 
   /* server → client */
   WELCOME: 201,
@@ -53,6 +54,7 @@ export const MESSAGE_NAMES: Readonly<Record<MessageType, string>> = {
   [MessageType.INPUT]: 'INPUT',
   [MessageType.PICKUP]: 'PICKUP',
   [MessageType.UPGRADE]: 'UPGRADE',
+  [MessageType.TARGET]: 'TARGET',
   [MessageType.WELCOME]: 'WELCOME',
   [MessageType.SNAPSHOT]: 'SNAPSHOT',
   [MessageType.PLAYER_STATE]: 'PLAYER_STATE',
@@ -94,18 +96,16 @@ export interface InputFrame {
   readonly turn: number;
   /** -1 = full reverse, 0 = idle, +1 = full ahead. */
   readonly throttle: number;
-  /**
-   * World-space aim angle in radians, or `null` to leave the hull heading alone.
+  /*
+   * There used to be `aim` and `firing` here. Both are gone, and the absence is the
+   * design: the hull is steered only by `turn`, and the *server* picks the target and
+   * decides when to fire. A client that cannot express "shoot at that" cannot cheat by
+   * expressing it, and the whole aim/aim-assist/reconciliation stack that existed to
+   * keep two aim models in sync no longer has a reason to exist.
    *
-   * This is **authoritative**: when present, the server turns the hull toward this
-   * angle immediately (up to a generous anti-snap limit), rather than only using it
-   * for a future turret. That makes the mouse the steering device it looks like in
-   * the UI, and it keeps `turn` as the keyboard alternative rather than a
-   * contradictory second source of truth.
+   * The player still has agency — over which target is chosen, via `TARGET` — but that
+   * is a *request*, validated server-side against range like every other input.
    */
-  readonly aim: Radians | null;
-  /** Whether the trigger is held this tick. The server decides if a shot is legal. */
-  readonly firing: boolean;
 }
 
 /** One entity inside a snapshot. Intentionally flat and short. */
@@ -129,6 +129,14 @@ export interface SnapshotEntity {
   readonly npcTier?: NpcTier;
   /** Box payload kind. Box records only. */
   readonly boxKind?: BoxKind;
+  /**
+   * What this player is currently shooting at, if anything.
+   *
+   * Sent on the player's own record so the client can draw the target ring on the right
+   * enemy without guessing which one the server picked. Optional for the usual reason:
+   * a delta omits unchanged fields, and most frames have no target change at all.
+   */
+  readonly targetId?: EntityId | null;
   /** Shield remaining in seconds; non-zero means the hull is invulnerable. */
   readonly shield?: number;
   /**
@@ -221,6 +229,23 @@ export interface PickupMessage extends MessageBase {
   boxId: string;
 }
 
+/**
+ * Ask the server to focus a specific target, or to go back to automatic targeting.
+ *
+ * A request, not a command. The server checks the id names something alive and inside
+ * weapon range before honouring it, and it clears the selection itself when the target
+ * dies or slips out of range — so a client that stops sending this can never hold a
+ * stale lock on something it can no longer see.
+ *
+ * `entityId: null` is meaningful: it means "back to nearest enemy", which is how a
+ * click on empty water is expressed.
+ */
+export interface TargetMessage extends MessageBase {
+  t: typeof MessageType.TARGET;
+  /** Id to focus, or `null` to resume automatic targeting. */
+  entityId: string | null;
+}
+
 /** Spend scrap on one rank of an upgrade. Validated server-side. */
 export interface UpgradeMessage extends MessageBase {
   t: typeof MessageType.UPGRADE;
@@ -229,7 +254,13 @@ export interface UpgradeMessage extends MessageBase {
 
 /** Every frame a client is allowed to send. */
 export type ClientMessage =
-  JoinMessage | InputMessage | PickupMessage | UpgradeMessage | PingMessage | PongMessage;
+  | JoinMessage
+  | InputMessage
+  | PickupMessage
+  | UpgradeMessage
+  | TargetMessage
+  | PingMessage
+  | PongMessage;
 
 /* ------------------------------- server → client -------------------------- */
 
@@ -419,13 +450,14 @@ export function isClientMessageType(
   value: unknown,
 ): value is (typeof MessageType)[keyof Pick<
   typeof MessageType,
-  'JOIN' | 'INPUT' | 'PICKUP' | 'UPGRADE' | 'PING' | 'PONG'
+  'JOIN' | 'INPUT' | 'PICKUP' | 'UPGRADE' | 'TARGET' | 'PING' | 'PONG'
 >] {
   return (
     value === MessageType.JOIN ||
     value === MessageType.INPUT ||
     value === MessageType.PICKUP ||
     value === MessageType.UPGRADE ||
+    value === MessageType.TARGET ||
     value === MessageType.PING ||
     value === MessageType.PONG
   );

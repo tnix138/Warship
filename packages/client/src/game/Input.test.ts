@@ -136,30 +136,30 @@ describe('InputController keyboard', { concurrency: 1 }, () => {
   test('W produces full forward throttle', () => {
     dom.window.dispatch('keydown', keyEvent({ key: 'w', code: 'KeyW' }));
 
-    const frame = controller.snapshot(null);
+    const frame = controller.snapshot();
     assert.equal(frame.throttle, 1, 'holding W must give throttle +1');
     assert.equal(frame.turn, 0);
   });
 
   test('S reverses and A/D turn', () => {
     dom.window.dispatch('keydown', keyEvent({ key: 's', code: 'KeyS' }));
-    assert.equal(controller.snapshot(null).throttle, -1);
+    assert.equal(controller.snapshot().throttle, -1);
 
     dom.window.dispatch('keyup', keyEvent({ key: 's', code: 'KeyS' }));
     dom.window.dispatch('keydown', keyEvent({ key: 'a', code: 'KeyA' }));
-    assert.equal(controller.snapshot(null).turn, -1, 'A steers left');
+    assert.equal(controller.snapshot().turn, -1, 'A steers left');
 
     dom.window.dispatch('keyup', keyEvent({ key: 'a', code: 'KeyA' }));
     dom.window.dispatch('keydown', keyEvent({ key: 'd', code: 'KeyD' }));
-    assert.equal(controller.snapshot(null).turn, 1, 'D steers right');
+    assert.equal(controller.snapshot().turn, 1, 'D steers right');
   });
 
   test('arrow keys work as well as letters', () => {
     dom.window.dispatch('keydown', keyEvent({ key: 'ArrowUp', code: 'ArrowUp' }));
-    assert.equal(controller.snapshot(null).throttle, 1);
+    assert.equal(controller.snapshot().throttle, 1);
 
     dom.window.dispatch('keydown', keyEvent({ key: 'ArrowLeft', code: 'ArrowLeft' }));
-    assert.equal(controller.snapshot(null).turn, -1);
+    assert.equal(controller.snapshot().turn, -1);
   });
 
   test('works on a non-QWERTY layout, where event.key is not "w"', () => {
@@ -169,7 +169,7 @@ describe('InputController keyboard', { concurrency: 1 }, () => {
        key and is layout-independent. */
     dom.window.dispatch('keydown', keyEvent({ key: 'z', code: 'KeyW' }));
     assert.equal(
-      controller.snapshot(null).throttle,
+      controller.snapshot().throttle,
       1,
       'the physical W key must throttle forward whatever character it types',
     );
@@ -179,7 +179,7 @@ describe('InputController keyboard', { concurrency: 1 }, () => {
     dom.window.dispatch('keydown', keyEvent({ key: 'w', code: 'KeyW' }));
     dom.window.dispatch('keyup', keyEvent({ key: 'q', code: 'KeyQ' }));
 
-    assert.equal(controller.snapshot(null).throttle, 1, 'W is still held');
+    assert.equal(controller.snapshot().throttle, 1, 'W is still held');
   });
 
   test('window blur releases every key', () => {
@@ -187,17 +187,16 @@ describe('InputController keyboard', { concurrency: 1 }, () => {
     dom.window.dispatch('keydown', keyEvent({ key: 'd', code: 'KeyD' }));
     dom.window.dispatch('blur', {});
 
-    const frame = controller.snapshot(null);
+    const frame = controller.snapshot();
     assert.equal(frame.throttle, 0);
     assert.equal(frame.turn, 0);
-    assert.equal(frame.firing, false);
   });
 
   test('does not steal keys from a text field', () => {
     const input = new ShimElement('INPUT');
     dom.window.dispatch('keydown', keyEvent({ key: 'w', code: 'KeyW', target: input }));
 
-    assert.equal(controller.snapshot(null).throttle, 0, 'typing must not steer the ship');
+    assert.equal(controller.snapshot().throttle, 0, 'typing must not steer the ship');
   });
 
   test('destroy() removes every listener', () => {
@@ -222,15 +221,20 @@ describe('InputController pointer', { concurrency: 1 }, () => {
     assert.equal(controller.pointer.y, 80);
   });
 
-  test('left button fires, and leaving the canvas stops tracking', () => {
+  test('a left click is queued as a selection, not as a shot', () => {
     const dom = installDom();
     const controller = new InputController(dom.canvas as unknown as HTMLElement);
 
-    dom.canvas.dispatch('pointerdown', { button: 0, clientX: 0, clientY: 0 });
-    assert.equal(controller.snapshot(null).firing, true);
+    dom.canvas.dispatch('pointerdown', { button: 0, clientX: 30, clientY: 40 });
 
-    dom.canvas.dispatch('pointerup', { button: 0 });
-    assert.equal(controller.snapshot(null).firing, false);
+    /* The click is handed to the caller, which is the only layer that can turn a screen
+       point into an enemy id. Nothing here may decide to fire: firing is server-side. */
+    assert.deepEqual(controller.drainClicks(), [{ x: 30, y: 40 }]);
+    assert.deepEqual(controller.drainClicks(), [], 'draining twice must not replay it');
+
+    /* A right click is the camera's business later, not a selection. */
+    dom.canvas.dispatch('pointerdown', { button: 2, clientX: 1, clientY: 2 });
+    assert.deepEqual(controller.drainClicks(), []);
 
     dom.canvas.dispatch('pointerleave', {});
     assert.equal(controller.pointer.inside, false);

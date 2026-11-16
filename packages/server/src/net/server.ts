@@ -16,6 +16,7 @@ import {
   type PickupMessage,
   type PongMessage,
   type ServerMessage,
+  type TargetMessage,
   type UpgradeMessage,
 } from '@warship/shared';
 
@@ -304,6 +305,10 @@ export class NetworkServer {
         this.#onUpgrade(connection, message);
         return;
       }
+      case MessageType.TARGET: {
+        this.#onTarget(connection, message);
+        return;
+      }
       case MessageType.PING: {
         this.#send(connection, {
           v: PROTOCOL_VERSION,
@@ -378,8 +383,6 @@ export class NetworkServer {
       {
         turn: input.turn ?? 0,
         throttle: input.throttle ?? 0,
-        aim: input.aim ?? null,
-        firing: input.firing ?? false,
       },
       performance.now(),
     );
@@ -437,6 +440,22 @@ export class NetworkServer {
       upgradeId: message.upgradeId,
       rank: result,
     });
+  }
+
+  /**
+   * Record the enemy the player clicked.
+   *
+   * Deliberately does almost nothing here: it does **not** check range, does not check
+   * that the entity exists, and does not fire. Those are per-tick facts (the enemy moves,
+   * the player moves), so they are re-evaluated in the loop every tick against a lock the
+   * client cannot forge. This handler only stores the request, which is why a malicious
+   * client gains nothing by lying — the worst it can do is ask to look at something.
+   */
+  #onTarget(connection: Connection, message: TargetMessage): void {
+    const player = this.#playerOf(connection);
+    if (player === undefined) return;
+
+    player.manualTargetId = message.entityId;
   }
 
   #onPong(connection: Connection, message: PongMessage): void {
@@ -584,12 +603,12 @@ function readInputFrame(value: unknown): Partial<InputFrame> {
   if (typeof value !== 'object' || value === null) return {};
   const candidate = value as Record<string, unknown>;
 
-  const aim = candidate.aim;
+  /* Only two fields are read now. `aim` and `firing` used to be here and are simply
+     ignored if an old client still sends them — an unknown field on the wire is not an
+     error, it is just no longer part of the contract. */
   return {
     turn: clampUnit(candidate.turn),
     throttle: clampUnit(candidate.throttle),
-    aim: typeof aim === 'number' && Number.isFinite(aim) ? aim : null,
-    firing: candidate.firing === true,
   };
 }
 

@@ -12,6 +12,8 @@ import {
   type WelcomeMessage,
 } from '@warship/shared';
 
+import { FA, ltr } from './strings.fa';
+
 /**
  * DOM HUD for the networked game.
  *
@@ -29,7 +31,6 @@ export interface DebugStats {
   readonly rendererName: string;
   readonly entities: number;
   readonly tick: number;
-  readonly buffered: number;
 }
 
 /** How long an event line stays on screen before it is removed. */
@@ -40,7 +41,7 @@ const EVENT_MAX_LINES = 5;
 export class GameHud {
   readonly #hpLabel = document.getElementById('stat-hp');
   readonly #hpFill = document.getElementById('hp-fill');
-  readonly #hpBar = document.querySelector<HTMLElement>('.hpbar');
+  readonly #hpBar = document.querySelector<HTMLElement>('.meter--hull');
   readonly #level = document.getElementById('stat-level');
   readonly #class = document.getElementById('stat-class');
 
@@ -50,14 +51,6 @@ export class GameHud {
   readonly #renderer = document.getElementById('stat-renderer');
   readonly #entities = document.getElementById('stat-entities');
   readonly #tick = document.getElementById('stat-tick');
-  readonly #buffered = document.getElementById('stat-buffered');
-  readonly #pending = document.getElementById('stat-pending');
-  readonly #corrections = document.getElementById('stat-corrections');
-  readonly #offsetX = document.getElementById('stat-offset-x');
-  readonly #offsetRot = document.getElementById('stat-offset-rot');
-  readonly #maxOffset = document.getElementById('stat-max-offset');
-  readonly #easeTau = document.getElementById('stat-ease-tau');
-  readonly #predictionError = document.getElementById('stat-prediction-error');
   readonly #input = document.getElementById('stat-input');
   readonly #sent = document.getElementById('stat-sent');
 
@@ -69,7 +62,9 @@ export class GameHud {
   readonly #xpLabel = document.getElementById('stat-xp');
   readonly #scrap = document.getElementById('stat-scrap');
   readonly #points = document.getElementById('stat-points');
-  readonly #tier = document.getElementById('stat-tier');
+  readonly #zone = document.getElementById('stat-zone');
+  readonly #danger = document.getElementById('stat-danger');
+  readonly #rank = document.getElementById('status-rank');
 
   readonly #upgradeModal = document.getElementById('upgrade-modal');
   readonly #upgradeList = document.getElementById('upgrade-list');
@@ -79,20 +74,6 @@ export class GameHud {
   readonly #deathCountdown = document.getElementById('death-countdown');
 
   #lastDebugUpdate = 0;
-  #lastPrediction = {
-    pending: 0,
-    corrections: 0,
-    error: 0,
-    largest: 0,
-    recent: 0,
-    buffered: 0,
-    delayMs: 0,
-    correcting: false,
-    offset: 0,
-    offsetRotation: 0,
-    maxOffset: 0,
-    easeTau: 0.08,
-  };
   #lastHpText = '';
   #lastNetLabel = '';
   #lastXpText = '';
@@ -138,7 +119,7 @@ export class GameHud {
    * pressing keys that appear to do nothing.
    */
   setConnectionError(message: string): void {
-    this.#setNetLabel('error — see console');
+    this.#setNetLabel(FA.disconnect);
     if (this.#netDot) this.#netDot.className = 'dot dot--error';
     this.pushEvent(message);
     console.error('[net]', message);
@@ -146,7 +127,7 @@ export class GameHud {
 
   /** Show the shard, tick rate and world size once the handshake completes. */
   setServerInfo(welcome: WelcomeMessage): void {
-    this.#setNetLabel(`${welcome.shardId} · ${String(welcome.tickRate)} Hz`);
+    this.#setNetLabel(`${FA.online} · ${ltr(welcome.tickRate)} Hz`);
   }
 
   /* ------------------------------------------------------------------------ */
@@ -157,12 +138,14 @@ export class GameHud {
     this.#hp = state.hp;
     this.#maxHp = Math.max(1, state.maxHp);
     this.#renderHp();
-    setText(this.#level, String(state.level));
-    setText(this.#class, SHIP_CLASSES[state.shipClass].displayName);
+    setText(this.#level, toPersianDigits(state.level));
+    setText(this.#class, shipClassName(state.shipClass));
     this.#renderXp(state.xp);
-    setText(this.#scrap, String(state.scrap));
-    setText(this.#points, String(state.upgradePoints));
-    setText(this.#tier, String(state.hullTier));
+    setText(this.#scrap, toPersianDigits(state.scrap));
+    setText(this.#points, toPersianDigits(state.upgradePoints ?? 0));
+    setText(this.#zone, zoneName(state.zone));
+    setText(this.#danger, toPersianDigits(dangerFor(state.zone)));
+    setText(this.#rank, rankLine(state.level));
 
     /* Death is driven by the authoritative state, not by the local kill event: the
        event can be dropped by a reconnecting socket, and a player stuck behind a death
@@ -205,17 +188,20 @@ export class GameHud {
 
       const name = document.createElement('span');
       name.className = 'upgrade__name';
-      name.textContent = definition.displayName;
+      name.textContent = upgradeName(offer.upgradeId);
 
       const desc = document.createElement('span');
       desc.className = 'upgrade__desc';
-      desc.textContent = definition.description;
+      desc.textContent =
+        `${upgradeDescription(offer.upgradeId)} · ${FA.rank} ` +
+        `${toPersianDigits(offer.rank)}/${toPersianDigits(definition.maxRank)}`;
 
-      const rank = document.createElement('span');
-      rank.className = 'upgrade__rank';
-      rank.textContent = `rank ${String(offer.rank)} / ${String(definition.maxRank)}`;
+      const cost = document.createElement('span');
+      cost.className = 'upgrade__cost';
+      /* The server prices upgrades; the client only displays the number it was told. */
+      cost.textContent = ltr(toPersianDigits(definition.cost));
 
-      button.append(name, desc, rank);
+      button.append(name, desc, cost);
       button.addEventListener('click', () => {
         options.onChoose(offer.upgradeId);
       });
@@ -226,8 +212,8 @@ export class GameHud {
     setText(
       this.#upgradeHint,
       options.points > 1
-        ? `Pick an upgrade — ${String(options.points)} points`
-        : 'Pick an upgrade.',
+        ? `${FA.levelUpHint} (${toPersianDigits(options.points)} ${FA.points})`
+        : FA.levelUpHint,
     );
     modal.hidden = false;
   }
@@ -247,7 +233,7 @@ export class GameHud {
 
   showDeath(respawnInS: number): void {
     if (this.#deathScreen !== null) this.#deathScreen.hidden = false;
-    setText(this.#deathCountdown, String(Math.max(0, Math.ceil(respawnInS))));
+    setText(this.#deathCountdown, toPersianDigits(Math.max(0, Math.ceil(respawnInS))));
   }
 
   hideDeath(): void {
@@ -270,11 +256,6 @@ export class GameHud {
     setText(this.#tick, String(tick));
   }
 
-  /** Interpolation buffer depth, refreshed with the debug panel's 4 Hz cadence. */
-  setBufferDepth(frames: number): void {
-    setText(this.#buffered, String(frames));
-  }
-
   /**
    * Show the intent currently being sent, and how many INPUT frames have gone out.
    *
@@ -282,34 +263,15 @@ export class GameHud {
    * but the server ignores them": `sent` climbing with `input` showing `thr 1` means
    * the client is fine; `input –` while pressing W means the listener never fired.
    */
-  setInputState(frame: { turn: number; throttle: number; firing: boolean }, sent: number): void {
+  setInputState(frame: { turn: number; throttle: number }, sent: number): void {
     const parts: string[] = [];
-    if (frame.throttle > 0) parts.push('thr +1');
-    else if (frame.throttle < 0) parts.push('thr -1');
-    if (frame.turn > 0) parts.push('turn +1');
-    else if (frame.turn < 0) parts.push('turn -1');
-    if (frame.firing) parts.push('fire');
+    if (frame.throttle > 0) parts.push('جلو');
+    else if (frame.throttle < 0) parts.push('عقب');
+    if (frame.turn > 0) parts.push('راست');
+    else if (frame.turn < 0) parts.push('چپ');
 
     setText(this.#input, parts.length === 0 ? '–' : parts.join(' '));
     setText(this.#sent, String(sent));
-  }
-
-  /** Prediction health: unacknowledged inputs, corrections and worst error. */
-  setPredictionStats(stats: {
-    pending: number;
-    corrections: number;
-    error: number;
-    largest: number;
-    recent: number;
-    buffered: number;
-    delayMs: number;
-    correcting: boolean;
-    offset: number;
-    offsetRotation: number;
-    maxOffset: number;
-    easeTau: number;
-  }): void {
-    this.#lastPrediction = stats;
   }
 
   /** Throttled to ~4 Hz: DOM writes every frame would be wasted layout work. */
@@ -328,28 +290,6 @@ export class GameHud {
     setText(this.#zoom, `${stats.zoom.toFixed(2)}×`);
     setText(this.#camera, `${stats.cameraX.toFixed(0)}, ${stats.cameraY.toFixed(0)}`);
     setText(this.#renderer, stats.rendererName);
-    /* The three numbers that actually explain a jitter complaint:
-       how deep the interpolation buffer is, how far ahead/behind our own prediction
-       sits, and how many corrections have been applied recently. */
-    const buffered = String(this.#lastPrediction.buffered);
-    setText(this.#buffered, `${buffered} frames (${String(this.#lastPrediction.delayMs)}ms)`);
-
-    setText(this.#pending, String(this.#lastPrediction.pending));
-    setText(this.#predictionError, `${this.#lastPrediction.error.toFixed(2)} units`);
-    setText(
-      this.#corrections,
-      `${String(this.#lastPrediction.recent)} (last 60s) · max ${this.#lastPrediction.largest.toFixed(1)}u`,
-    );
-
-    /* The four numbers that explain *why* a correction is visible: how far the drawn pose
-       is displaced right now, by how much in angle, the worst displacement seen recently,
-       and the time constant currently in use for easing it away. */
-    const offsetNow = this.#lastPrediction.offset;
-    const offsetSignX = offsetNow > 0 ? '+' : '';
-    setText(this.#offsetX, `${offsetSignX}${offsetNow.toFixed(2)} units`);
-    setText(this.#offsetRot, `${this.#lastPrediction.offsetRotation.toFixed(3)} rad`);
-    setText(this.#maxOffset, `${this.#lastPrediction.maxOffset.toFixed(1)} units (last 60s)`);
-    setText(this.#easeTau, `${(this.#lastPrediction.easeTau * 1000).toFixed(0)} ms`);
   }
 
   /* ------------------------------------------------------------------------ */
@@ -411,7 +351,7 @@ export class GameHud {
 
   #renderXp(xp: number): void {
     const progress = xpProgress(xp);
-    const text = `${Math.round(progress.intoLevel).toString()} / ${Math.round(progress.levelSpan).toString()}`;
+    const text = `${toPersianDigits(Math.round(progress.intoLevel))} / ${toPersianDigits(Math.round(progress.levelSpan))} ${FA.xp}`;
 
     if (text !== this.#lastXpText) {
       setText(this.#xpLabel, text);
@@ -431,7 +371,7 @@ export class GameHud {
 
   /** Set the countdown text without re-showing an already-visible overlay. */
   updateDeathCountdown(seconds: number): void {
-    setText(this.#deathCountdown, String(Math.max(0, Math.ceil(seconds))));
+    setText(this.#deathCountdown, toPersianDigits(Math.max(0, Math.ceil(seconds))));
   }
 
   #setNetLabel(label: string): void {
@@ -444,25 +384,21 @@ export class GameHud {
 function describeState(state: ConnectionState): string {
   switch (state) {
     case 'idle': {
-      return 'idle';
+      return FA.offline;
     }
-    case 'connecting': {
-      return 'connecting…';
-    }
-    case 'handshaking': {
-      return 'handshaking…';
-    }
+    case 'connecting':
+    case 'handshaking':
     case 'joining': {
-      return 'joining world…';
+      return FA.connecting;
     }
     case 'connected': {
-      return 'online';
+      return FA.online;
     }
     case 'reconnecting': {
-      return 'reconnecting…';
+      return FA.reconnecting;
     }
     case 'disconnected': {
-      return 'disconnected';
+      return FA.disconnect;
     }
   }
 }
@@ -481,4 +417,170 @@ export function pingClass(rttMs: number): string {
 /** Unused today, kept so the class picker can label its buttons consistently. */
 export function shipClassLabel(shipClass: ShipClass): string {
   return SHIP_CLASSES[shipClass].displayName;
+}
+
+/* -------------------------------------------------------------------------- */
+/*  Locale helpers                                                            */
+/* -------------------------------------------------------------------------- */
+
+/** Latin digit → Persian digit, one char at a time. */
+const PERSIAN_DIGITS = ['۰', '۱', '۲', '۳', '۴', '۵', '۶', '۷', '۸', '۹'] as const;
+
+/**
+ * Render a number with Persian digits.
+ *
+ * Used for *read-only* counters (level, scrap, hull, timers) where the value is being
+ * read as text. Deliberately not applied to the debug panel: those are numbers a
+ * developer compares against logs, and Persian digits there would make them harder to
+ * match, not easier.
+ */
+export function toPersianDigits(value: number | string): string {
+  return String(value).replace(/[0-9]/g, (digit) => PERSIAN_DIGITS[Number(digit)] ?? digit);
+}
+
+/** Persian name for a ship class, falling back to the English one if unknown. */
+function shipClassName(shipClass: ShipClass): string {
+  switch (shipClass) {
+    case 'speed': {
+      return FA.shipSpeedName;
+    }
+    case 'normal': {
+      return FA.shipNormalName;
+    }
+    case 'power': {
+      return FA.shipPowerName;
+    }
+    default: {
+      /* Unreachable: `ShipClass` is exhausted above. Kept as a defensive fallback for a
+         class name arriving from a newer server than this build. */
+      return shipClass satisfies never;
+    }
+  }
+}
+
+/** Persian name for a zone. */
+function zoneName(zone: string | undefined): string {
+  switch (zone) {
+    case 'safe': {
+      return FA.zoneSafe;
+    }
+    case 'mid': {
+      return FA.zoneMid;
+    }
+    case 'open': {
+      return FA.zoneOpen;
+    }
+    default: {
+      return zone ?? '—';
+    }
+  }
+}
+
+/**
+ * Threat number shown next to the zone.
+ *
+ * A *derived* display, not a game value: it is the zone's NPC level band collapsed to
+ * one digit, which is what a player actually wants to know ("is this water dangerous or
+ * not") before they commit to sailing into it.
+ */
+function dangerFor(zone: string | undefined): number {
+  switch (zone) {
+    case 'safe': {
+      return 1;
+    }
+    case 'mid': {
+      return 2;
+    }
+    case 'open': {
+      return 3;
+    }
+    default: {
+      return 1;
+    }
+  }
+}
+
+/** "سطح ۳ — ناوچه"-style line for the status card header. */
+function rankLine(level: number): string {
+  return `${FA.level} ${toPersianDigits(level)} — ${hullRankName(level)}`;
+}
+
+/**
+ * Hull rank shown next to the level.
+ *
+ * Purely cosmetic naming for progression the player can already see in the level number;
+ * it deliberately does not imply any stat the server does not grant.
+ */
+function hullRankName(level: number): string {
+  if (level >= 30) return 'رزم‌ناو';
+  if (level >= 20) return 'ناو';
+  if (level >= 12) return 'ناوچه';
+  if (level >= 6) return 'قایق توپدار';
+  return 'قایق';
+}
+
+/** Persian name for an upgrade id. */
+function upgradeName(id: UpgradeId): string {
+  switch (id) {
+    case 'reinforced-hull': {
+      return FA.upgradeReinforcedHull;
+    }
+    case 'armor-plating': {
+      return FA.upgradeArmorPlating;
+    }
+    case 'marine-boiler': {
+      return FA.upgradeMarineBoiler;
+    }
+    case 'steering-gear': {
+      return FA.upgradeSteeringGear;
+    }
+    case 'rapid-loader': {
+      return FA.upgradeRapidLoader;
+    }
+    case 'heavy-shells': {
+      return FA.upgradeHeavyShells;
+    }
+    case 'extended-range': {
+      return FA.upgradeExtendedRange;
+    }
+    case 'spotter-plane': {
+      return FA.upgradeSpotterPlane;
+    }
+    default: {
+      return id satisfies never;
+    }
+  }
+}
+
+/** Persian description for an upgrade id. */
+function upgradeDescription(id: UpgradeId): string {
+  switch (id) {
+    case 'reinforced-hull': {
+      return FA.upgradeReinforcedHullDesc;
+    }
+    case 'armor-plating': {
+      return FA.upgradeArmorPlatingDesc;
+    }
+    case 'marine-boiler': {
+      return FA.upgradeMarineBoilerDesc;
+    }
+    case 'steering-gear': {
+      return FA.upgradeSteeringGearDesc;
+    }
+    case 'rapid-loader': {
+      return FA.upgradeRapidLoaderDesc;
+    }
+    case 'heavy-shells': {
+      return FA.upgradeHeavyShellsDesc;
+    }
+    case 'extended-range': {
+      return FA.upgradeExtendedRangeDesc;
+    }
+    case 'spotter-plane': {
+      return FA.upgradeSpotterPlaneDesc;
+    }
+    default: {
+      return id satisfies never;
+    }
+  }
 }
