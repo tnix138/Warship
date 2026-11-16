@@ -1,6 +1,13 @@
 import { Container, Graphics, Sprite, type Texture } from 'pixi.js';
 
-import { NpcTier, RENDER_SELF_RING_PULSE_MS, SHIP_CLASSES, type ShipClass } from '@warship/shared';
+import {
+  DEFAULT_SHIP_CLASS,
+  NPC_STATS,
+  NpcTier,
+  RENDER_SELF_RING_PULSE_MS,
+  SHIP_CLASSES,
+  type ShipClass,
+} from '@warship/shared';
 
 import type { RenderEntity } from '../game/World';
 import type { GameTextures } from './assets';
@@ -73,7 +80,8 @@ interface ShipView {
   readonly tierRing: Graphics;
   /** Red lock ring, drawn thicker when the player chose the target by hand. */
   readonly targetRing: Graphics;
-  shipClass: ShipClass;
+  /** Hull class last drawn; `undefined` for NPCs/projectiles, which have none. */
+  shipClass?: ShipClass;
 }
 
 export class EntityRenderer {
@@ -203,10 +211,17 @@ export class EntityRenderer {
     return view;
   }
 
-  /** The hull texture for one entity: NPCs share one sprite, players get theirs. */
+  /**
+   * The hull texture for one entity: NPCs share one sprite, players get theirs.
+   *
+   * A player record that somehow arrives without a class falls back to the default
+   * hull rather than indexing a record with `undefined` — a wrong sprite is a
+   * cosmetic bug, a crash is a black screen.
+   */
   #textureFor(entity: RenderEntity): Texture {
     if (entity.kind === 'npc') return this.#textures.npc;
-    return this.#textures.ships[entity.shipClass];
+    const shipClass = entity.shipClass ?? DEFAULT_SHIP_CLASS;
+    return this.#textures.ships[shipClass];
   }
 
   #apply(entity: RenderEntity, view: ShipView, now: number): void {
@@ -228,7 +243,7 @@ export class EntityRenderer {
     const scale = npcTier === undefined ? 1 : NPC_TIER_SCALE[npcTier];
     view.sprite.scale.set(scale);
 
-    const definition = SHIP_CLASSES[entity.shipClass];
+    const definition = SHIP_CLASSES[entity.shipClass ?? DEFAULT_SHIP_CLASS];
 
     /* Radius for *drawing*, which is not `definition.radius`.
        That field is a collision radius (20 units for a Normal hull) while the art is
@@ -281,7 +296,11 @@ export class EntityRenderer {
        Warship is left *before* committing to the fight, and a ring alone says nothing
        about damage. The local player's ship keeps the old rule (only when hurt) so the
        screen stays clean while nothing is happening. */
-    const maxHp = Math.max(1, definition.hp);
+    /* Max hull per kind: a player's comes from its class, an NPC's from its tier.
+       Using the class table for an NPC was the second half of the same bug — a Coastal
+       has 60 hull but was measured against a Normal hull's 140, so every NPC's bar
+       started two-thirds empty. */
+    const maxHp = Math.max(1, npcTier === undefined ? definition.hp : NPC_STATS[npcTier].maxHp);
     const fraction = Math.max(0, Math.min(1, entity.hp / maxHp));
     const showBar = npcTier !== undefined || fraction < 0.999;
 

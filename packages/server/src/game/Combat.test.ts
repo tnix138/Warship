@@ -255,6 +255,7 @@ describe('Combat — projectile pool', () => {
         angle: 0,
         damage: 1,
         shipMaxSpeed: 240,
+        range: 100_000,
       });
       assert.notEqual(shot, null);
       if (shot !== null) ids.add(shot.id);
@@ -275,6 +276,7 @@ describe('Combat — projectile pool', () => {
         angle: 0,
         damage: 1,
         shipMaxSpeed: 240,
+        range: 100_000,
       });
     }
 
@@ -286,6 +288,7 @@ describe('Combat — projectile pool', () => {
       angle: 0,
       damage: 1,
       shipMaxSpeed: 240,
+      range: 100_000,
     });
 
     assert.equal(overflow, null);
@@ -303,6 +306,7 @@ describe('Combat — projectile pool', () => {
       angle: 0,
       damage: 1,
       shipMaxSpeed: 240,
+      range: 100_000,
     });
     assert.equal(pool.liveCount, 1);
 
@@ -320,6 +324,7 @@ describe('Combat — projectile pool', () => {
       angle: 0,
       damage: 1,
       shipMaxSpeed: 240,
+      range: 100_000,
     });
     assert.notEqual(reused, null);
   });
@@ -334,6 +339,7 @@ describe('Combat — projectile pool', () => {
       angle: 0,
       damage: 1,
       shipMaxSpeed: 240,
+      range: 100_000,
     });
     assert.notEqual(shot, null);
     if (shot === null) return;
