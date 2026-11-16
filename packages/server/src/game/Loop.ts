@@ -245,6 +245,23 @@ export class Loop {
     const targets: { id: string; x: number; y: number }[] = [];
     for (const player of this.#world.allPlayers()) {
       if (!player.isAlive) continue;
+      /* A shielded ship is not a valid target.
+         This is the other half of the spawn-shield fix, and the half that actually
+         matters: `#resolveHits` already drops damage aimed at a shielded player, but the
+         NPC still *chose* them, closed in, and was sitting at point-blank when the shield
+         expired. Skipping them here means the AI never commits in the first place, so
+         protection ends with the player alone rather than with a volley already in the
+         air. Without this, 3 s of invulnerability just delays the first hit by 3 s. */
+      if (player.shieldSeconds(tick) > 0) continue;
+      /* Nor is a player who has never asked to move.
+         Spawn rings are finite and the sea is full of NPCs, so "clear of every enemy" is
+         not something the spawn point can promise — an NPC that happened to be patrolling
+         nearby will find a stationary ship in under a minute no matter where it appeared.
+         The only reliable way to keep the first minute quiet is to make motion the
+         opt-in: until the player presses a key, they are scenery as far as the AI is
+         concerned. This cannot be abused either — the moment they steer, every NPC that
+         already had them in range still has them. */
+      if (!player.hasTakenControl) continue;
       targets.push({ id: player.id, x: player.x, y: player.y });
     }
 

@@ -10,6 +10,7 @@ import {
   NpcTier,
   ZoneId,
   RESPAWN_DELAY_S,
+  RESPAWN_SHIELD_S,
   TICK_DURATION_S,
   UPGRADES,
   UpgradeId,
@@ -135,6 +136,45 @@ describe('Loop — combat', () => {
     assert.equal(world.projectileCount, 1, 'a revived ship must be able to shoot at once');
   });
 
+  test('an NPC ignores a player who has not asked to move', () => {
+    /* The bug this pins: a session used to open with the player taking damage before
+       they had touched a key. Spawn rings cannot promise "clear of every enemy" — NPCs
+       patrol a 1400-unit leash on a 1000-unit safe zone — so the reliable rule is that
+       motion is the opt-in. Without this assertion the rule is one careless edit away
+       from being deleted, and the symptom (dying while reading the HUD) does not look
+       like a targeting bug when it happens.
+
+       Note the shield is *not* what is under test here. The player's own guns fire
+       automatically, so by the time a 3 s shield expires the NPC in range has usually
+       been sunk — which is why this only asserts on the NPC's intent, not on the
+       player's hull over a long window. */
+    const { world, loop } = makeHarness();
+    const player = world.addPlayer({ id: 'p1', at: { x: 3_000, y: 3_000 } });
+
+    /* Point-blank, inside weapon range, alive: everything except the player's consent. */
+    const npc = new Npc({ id: 'idle', tier: NpcTier.Large, x: 3_000, y: 3_150 });
+    world.npcs.set(npc.id, npc);
+
+    run(loop, 10);
+
+    assert.equal(npc.targetId, null, 'the NPC must not acquire an idle player');
+    assert.equal(player.hp, player.maxHp, 'and no damage may reach them');
+    assert.equal(npc.isAlive, true, 'the idle player must not have engaged either');
+
+    /* And once they steer, the same NPC engages — the protection is an opt-in, not an
+       exploit. Three independent things gate this, and the test has to clear all three:
+       the spawn shield (60 ticks), the idle rule, and the NPC's own detection radius. */
+    run(loop, Math.ceil(RESPAWN_SHIELD_S / TICK_DURATION_S) + 2);
+
+    player.acceptInput(1, { turn: 0.1, throttle: 0 }, performance.now());
+    /* Reposition: the NPC has been patrolling and may have drifted out of range. */
+    npc.x = player.x;
+    npc.y = player.y + 200;
+    run(loop, 5);
+
+    assert.equal(npc.targetId, 'p1', 'taking control must make the player targetable');
+  });
+
   test('a kill scatters boxes into the world', () => {
     const { world, loop } = makeHarness();
     world.addPlayer({ id: 'p1', at: { x: 2_000, y: 2_000 } });
@@ -149,7 +189,7 @@ describe('Loop — combat', () => {
     assert.ok(world.boxCount > 0, 'a kill should leave loot behind');
   });
 
-  test('an NPC kills a stationary player, who respawns after the delay', () => {
+  test('an NPC kills a player who has taken control, who then respawns', () => {
     const { world, loop } = makeHarness();
     const player = world.addPlayer({ id: 'p1', at: { x: 3_000, y: 3_000 } });
     const levelBefore = player.level;
@@ -160,9 +200,14 @@ describe('Loop — combat', () => {
     const npc = new Npc({ id: 'n3', tier: NpcTier.Large, x: 3_000, y: 3_400 });
     world.npcs.set(npc.id, npc);
 
-    /* No input at all: the player sits still and takes it. Step a tick at a time and stop
-       the moment the hull is gone — running a fixed window would sail past the death and
-       straight into the respawn, and the assertion would then be checking nothing. */
+    /* The player has to *ask* to move before an NPC will engage them — that is the whole
+       point of the idle-protection rule (see `#stepNpcs`). A single turn input is enough,
+       and it is deliberately not repeated: once taken, control is taken. */
+    player.acceptInput(1, { turn: 0.2, throttle: 0 }, performance.now());
+
+    /* Step a tick at a time and stop the moment the hull is gone — running a fixed window
+       would sail past the death and straight into the respawn, and the assertion would
+       then be checking nothing. */
     let ticksToDeath = 0;
     while (player.isAlive && ticksToDeath < 2_000) {
       run(loop, 1);

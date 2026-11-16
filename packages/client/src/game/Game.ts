@@ -22,6 +22,8 @@ import { EntityRenderer } from '../render/EntityRenderer';
 import { Ocean } from '../render/ocean';
 import { WorldObjects } from '../render/WorldObjects';
 import { GameHud } from '../ui/GameHud';
+import { Minimap } from '../ui/Minimap';
+import { FA } from '../ui/strings.fa';
 
 /**
  * The client game.
@@ -66,6 +68,15 @@ export async function createGame(options: GameOptions): Promise<Game> {
   });
 
   const hud = new GameHud();
+
+  /* The radar is DOM/Canvas, not Pixi: it lives beside the app rather than in the scene
+     graph, because it must not pan, zoom or rotate with the camera. */
+  const minimapCanvas = document.getElementById('minimap-canvas');
+  const minimap = minimapCanvas instanceof HTMLCanvasElement ? new Minimap(minimapCanvas) : null;
+  const onResize = (): void => {
+    minimap?.resize();
+  };
+  window.addEventListener('resize', onResize);
   const world = new ClientWorld();
   const camera = new Camera();
   const ocean = new Ocean(textures.water, app.screen.width, app.screen.height);
@@ -255,6 +266,7 @@ export async function createGame(options: GameOptions): Promise<Game> {
       now,
     );
 
+    minimap?.update(world, now);
     app.render();
   };
 
@@ -268,6 +280,8 @@ export async function createGame(options: GameOptions): Promise<Game> {
       entities.destroy();
       combat.destroy();
       worldObjects?.destroy();
+      window.removeEventListener('resize', onResize);
+      minimap?.destroy();
       hud.destroy();
       app.destroy(true, { children: true });
     },
@@ -281,22 +295,22 @@ function describeEvent(
 ): string {
   switch (kind) {
     case 'kill': {
-      return 'Ship destroyed';
+      return FA.evKill;
     }
     case 'levelup': {
-      return `Level up → ${String(data?.level ?? '?')}`;
+      return FA.evLevelUp(data?.level ?? 0);
     }
     case 'damaged': {
-      return `-${String(data?.amount ?? 0)} hull`;
+      return FA.evDamaged(data?.amount ?? 0);
     }
     case 'pickup': {
-      return 'Box collected';
+      return FA.evPickup;
     }
     case 'join': {
-      return 'Ship entered the water';
+      return FA.evJoin;
     }
     case 'leave': {
-      return 'Ship left the water';
+      return FA.evLeave;
     }
     default: {
       return kind;

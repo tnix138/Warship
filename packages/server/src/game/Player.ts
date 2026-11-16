@@ -66,6 +66,16 @@ export class Player {
   respawnedAtTick: number | null = null;
 
   /**
+   * Whether the player has ever asked to move.
+   *
+   * Distinct from "is moving now": a player who held W and then stopped has taken
+   * responsibility for their ship, while one who has not sent a single throttle or turn
+   * request is still sitting where the server put them. NPCs ignore the latter, which is
+   * what stops a session from opening with a fight the player never opted into.
+   */
+  hasTakenControl = false;
+
+  /**
    * Target the player asked for by clicking, or `null` for automatic.
    *
    * A *request*. It is re-validated against range and liveness every tick and cleared
@@ -118,7 +128,14 @@ export class Player {
     this.speed = 0;
 
     this.lastFiredTick = null;
-    this.shieldUntilTick = 0;
+    /* A brand-new ship gets the same spawn shield a respawned one does.
+       This used to be `0`, meaning "no protection", while `respawn()` granted
+       `RESPAWN_SHIELD_S`. The effect was that a player who had just joined could be shot
+       before they had touched a key — and since the first area outside the safe ring is
+       populated by NPCs that were already there, they often were. A death on the first
+       tick of a session is indistinguishable from a broken game, and the shield already
+       existed; it just was never granted on the path everyone actually takes. */
+    this.shieldUntilTick = options.tick + Math.round(RESPAWN_SHIELD_S / TICK_DURATION_S);
     this.level = STARTING_LEVEL;
     this.xp = STARTING_XP;
     this.scrap = STARTING_SCRAP;
@@ -166,6 +183,7 @@ export class Player {
     this.lastInputSeq = seq;
     this.intent = intent;
     this.lastInputAt = now;
+    if (intent.throttle !== 0 || intent.turn !== 0) this.hasTakenControl = true;
     return true;
   }
 

@@ -1,5 +1,5 @@
 <!doctype html>
-<html lang="en">
+<html lang="fa" dir="rtl">
   <head>
     <meta charset="UTF-8" />
     <meta
@@ -7,8 +7,25 @@
       content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no"
     />
     <meta name="color-scheme" content="dark" />
-    <meta name="description" content="WarShip — a 2D online naval game for the browser." />
-    <title>warship</title>
+    <meta name="description" content="نبرد کشتی‌ها — بازی آنلاین دو بعدی دریایی در مرورگر." />
+    <title>نبرد کشتی‌ها</title>
+    <!--
+      Persian webfont, self-hosted-free and swap-loaded.
+
+      Without this the game falls back to whatever Arabic-capable face the OS happens to
+      have. Windows and macOS are fine (Segoe UI / Tahoma both carry Persian glyphs), but
+      a bare Linux desktop renders connecting-script text as disconnected letters, which
+      is unreadable rather than merely ugly. `display=swap` means the HUD is painted in
+      the fallback first and swaps when the font arrives — the game must never wait on a
+      font to start.
+    -->
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Vazirmatn:wght@400;600;800&display=swap"
+      rel="stylesheet"
+    />
+
     <link
       rel="icon"
       href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%2304121e'/%3E%3Cpath d='M16 5l6 18-6-4-6 4z' fill='%234fd1c5'/%3E%3C/svg%3E"
@@ -16,81 +33,123 @@
   </head>
   <body>
     <div id="app">
-      <canvas id="game-canvas" aria-label="WarShip game viewport"></canvas>
+      <canvas id="game-canvas" aria-label="میدان بازی"></canvas>
     </div>
 
-    <header class="hud hud--top">
-      <div class="brand">
-        <span class="brand__mark" aria-hidden="true"></span>
-        <span class="brand__name">warship</span>
-        <span class="badge badge--muted" id="build-badge">milestone 2</span>
+    <!-- ==================== top-centre: level, hull, xp ==================== -->
+    <section class="plate plate--status" aria-label="وضعیت کشتی">
+      <div class="level-badge">
+        <span class="level-badge__num" id="stat-level">۱</span>
       </div>
-      <div class="status">
-        <span class="dot dot--offline" id="net-dot" aria-hidden="true"></span>
-        <span id="net-label">offline</span>
-      </div>
-    </header>
 
-    <section class="hud hud--vitals" aria-label="Ship status">
-      <div class="vitals__row">
-        <span class="vitals__label">hull</span>
-        <span class="vitals__value" id="stat-hp">–</span>
-      </div>
-      <div class="hpbar" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0">
-        <div class="hpbar__fill" id="hp-fill" style="width: 0%"></div>
-      </div>
-      <div class="xpbar" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0">
-        <div class="xpbar__fill" id="xp-fill" style="width: 0%"></div>
-      </div>
-      <div class="vitals__row vitals__row--sub">
-        <span>level <b id="stat-level">1</b></span>
-        <span>xp <b id="stat-xp">0 / 100</b></span>
-        <span>class <b id="stat-class">–</b></span>
-      </div>
-      <div class="vitals__row vitals__row--sub">
-        <span>scrap <b id="stat-scrap">0</b></span>
-        <span>points <b id="stat-points">0</b></span>
-        <span>tier <b id="stat-tier">1</b></span>
+      <div class="status-card">
+        <div class="status-card__head">
+          <span class="status-card__rank" id="status-rank">سطح ۱ — قایق</span>
+          <span class="status-card__xp" id="stat-xp">۰ / ۱۰۰ تجربه</span>
+        </div>
+
+        <div class="hull-row">
+          <span class="hull-row__heart" aria-hidden="true">❤</span>
+          <div
+            class="meter meter--hull"
+            role="progressbar"
+            aria-label="بدنه"
+            aria-valuemin="0"
+            aria-valuemax="100"
+            aria-valuenow="0"
+          >
+            <div class="meter__fill" id="hp-fill" style="width: 0%"></div>
+            <span class="meter__text" id="stat-hp">—</span>
+          </div>
+        </div>
+
+        <div
+          class="xp-track"
+          role="progressbar"
+          aria-label="تجربه"
+          aria-valuemin="0"
+          aria-valuemax="100"
+          aria-valuenow="0"
+        >
+          <div class="xp-track__fill" id="xp-fill" style="width: 0%"></div>
+        </div>
       </div>
     </section>
 
-    <!-- Level-up: the server sends the choices, the client only renders them. -->
-    <section class="modal" id="upgrade-modal" hidden aria-label="Choose an upgrade">
+    <!-- ==================== top-left: resources + zone ==================== -->
+    <section class="plate plate--resources" aria-label="منابع">
+      <div class="coin-card">
+        <span class="coin-card__icon" aria-hidden="true"></span>
+        <span class="coin-card__value" id="stat-scrap">۰</span>
+      </div>
+      <div class="coin-card coin-card--points">
+        <span class="coin-card__icon coin-card--points__icon" aria-hidden="true">✦</span>
+        <span class="coin-card__value" id="stat-points">۰</span>
+      </div>
+    </section>
+
+    <div class="plate plate--zone" aria-label="منطقه">
+      <span id="stat-zone">آب آرام</span>
+      <span class="plate--zone__sep" aria-hidden="true">—</span>
+      <span>خطر <b id="stat-danger">۱</b></span>
+      <span class="plate--zone__class"><b id="stat-class">—</b></span>
+    </div>
+
+    <!-- ==================== top-right: radar ==================== -->
+    <section class="plate plate--radar" aria-label="رادار">
+      <div class="radar">
+        <canvas id="minimap-canvas" width="200" height="200" aria-hidden="true"></canvas>
+      </div>
+    </section>
+
+    <div class="plate plate--range" aria-label="برد رادار">برد <span dir="ltr">۱۸۰۰</span></div>
+
+    <!-- ==================== right: connection ==================== -->
+    <div class="plate plate--net" aria-live="polite">
+      <span class="dot dot--offline" id="net-dot" aria-hidden="true"></span>
+      <span id="net-label">قطع</span>
+    </div>
+
+    <!-- ==================== upgrade picker ==================== -->
+    <section class="modal" id="upgrade-modal" hidden aria-label="انتخاب ارتقا">
       <div class="modal__card">
-        <h2 class="modal__title">Level up</h2>
-        <p class="modal__hint" id="upgrade-hint">Pick one upgrade.</p>
+        <h2 class="modal__title" id="upgrade-title">ارتقا</h2>
+        <p class="modal__hint" id="upgrade-hint">یکی از ارتقاها را انتخاب کن.</p>
         <div class="upgrade-list" id="upgrade-list"></div>
-        <button class="modal__close" id="upgrade-skip" type="button">Later</button>
+        <button class="btn btn--ghost" id="upgrade-skip" type="button">بعداً</button>
       </div>
     </section>
 
-    <!-- Death: a full-screen dim with the respawn countdown. -->
+    <!-- ==================== death ==================== -->
     <section class="death" id="death-screen" hidden aria-live="polite">
       <div class="death__card">
-        <h2 class="death__title">Hull lost</h2>
-        <p class="death__text">Respawn in <b id="death-countdown">5</b>s</p>
-        <p class="death__sub" id="death-sub">Your progress is kept.</p>
+        <h2 class="death__title">بدنه از دست رفت</h2>
+        <p class="death__text"><span id="death-countdown">۵</span> ثانیه تا بازگشت</p>
+        <p class="death__sub" id="death-sub">پیشرفتت حفظ می‌شود.</p>
       </div>
     </section>
 
-    <aside class="hud hud--debug" id="debug-panel">
-      <div class="debug__row"><span>fps</span><b id="stat-fps">–</b></div>
-      <div class="debug__row debug__row--adv"><span>zoom</span><b id="stat-zoom">–</b></div>
-      <div class="debug__row debug__row--adv"><span>camera</span><b id="stat-camera">–</b></div>
-      <div class="debug__row"><span>entities</span><b id="stat-entities">0</b></div>
-      <div class="debug__row"><span>tick</span><b id="stat-tick">0</b></div>
-      <div class="debug__row"><span>input</span><b id="stat-input">–</b></div>
-      <div class="debug__row"><span>sent</span><b id="stat-sent">0</b></div>
-      <div class="debug__row debug__row--adv"><span>renderer</span><b id="stat-renderer">–</b></div>
+    <!-- ==================== debug ==================== -->
+    <aside class="plate plate--debug" id="debug-panel">
+      <div class="debug__row"><span>فریم</span><b id="stat-fps">–</b></div>
+      <div class="debug__row"><span>موجودیت</span><b id="stat-entities">0</b></div>
+      <div class="debug__row"><span>تیک</span><b id="stat-tick">0</b></div>
+      <div class="debug__row"><span>ورودی</span><b id="stat-input">–</b></div>
+      <div class="debug__row"><span>ارسالی</span><b id="stat-sent">0</b></div>
+      <div class="debug__row debug__row--adv"><span>بزرگ‌نمایی</span><b id="stat-zoom">–</b></div>
+      <div class="debug__row debug__row--adv"><span>دوربین</span><b id="stat-camera">–</b></div>
+      <div class="debug__row debug__row--adv"><span>رندرر</span><b id="stat-renderer">–</b></div>
     </aside>
 
-    <div class="hud hud--events" id="event-log" aria-live="polite"></div>
+    <div class="plate plate--events" id="event-log" aria-live="polite"></div>
 
-    <footer class="hud hud--bottom">
-      <span><kbd>WASD</kbd> steer</span>
-      <span><kbd>mouse</kbd> aim</span>
-      <span><kbd>click</kbd> / <kbd>space</kbd> fire</span>
-      <span><kbd>wheel</kbd> zoom</span>
+    <!-- ==================== controls ==================== -->
+    <footer class="plate plate--controls">
+      <span><kbd>W</kbd><kbd>S</kbd> جلو / عقب</span>
+      <span><kbd>A</kbd><kbd>D</kbd> چرخش</span>
+      <span><kbd>کلیک</kbd> انتخاب هدف</span>
+      <span><kbd>کلیک روی دریا</kbd> لغو هدف</span>
+      <span><kbd>چرخ ماوس</kbd> بزرگ‌نمایی</span>
     </footer>
 
     <script type="module" src="/src/main.ts"></script>
