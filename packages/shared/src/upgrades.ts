@@ -23,6 +23,14 @@ export interface ShipStats {
   readonly armor: number;
   readonly range: number;
   readonly reloadTime: number;
+  /**
+   * Shots per second the weapon is *allowed* to sustain.
+   *
+   * Distinct from `1 / reloadTime`: reload is how fast the gun can cycle, fireRate is
+   * the trigger discipline on top of it. The server fires automatically now, so this is
+   * the knob that keeps an auto-trigger from being strictly better than a human one.
+   */
+  readonly fireRate: number;
 }
 
 /* -------------------------------------------------------------------------- */

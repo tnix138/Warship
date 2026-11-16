@@ -3,7 +3,6 @@ import { Application } from 'pixi.js';
 import {
   CLIENT_INPUT_RATE,
   MVP_FLAGS,
-  computeShipStats,
   RENDER_BACKGROUND_COLOR,
   RENDER_MAX_DPR,
   ShipClass,
@@ -14,7 +13,6 @@ import {
 } from '@warship/shared';
 
 import { ClientWorld } from './World';
-import { Prediction } from './Prediction';
 import { InputController } from './Input';
 import { Connection } from '../net/Connection';
 import { loadTextures } from '../render/assets';
@@ -69,7 +67,6 @@ export async function createGame(options: GameOptions): Promise<Game> {
 
   const hud = new GameHud();
   const world = new ClientWorld();
-  const prediction = new Prediction();
   const camera = new Camera();
   const ocean = new Ocean(textures.water, app.screen.width, app.screen.height);
 
@@ -137,44 +134,9 @@ export async function createGame(options: GameOptions): Promise<Game> {
         lastSelf = state;
         deadForS = 0;
         hud.updateSelf(state);
-
-        // Prediction must integrate with exactly the server's numbers, or the two
-        // drift apart and every reconciliation becomes a correction.
-        if (MVP_FLAGS.prediction) {
-          prediction.setStats({
-            maxSpeed: computeShipStats(state.shipClass).maxSpeed,
-            turnRate: computeShipStats(state.shipClass).turnRate,
-          });
-        }
       },
       onSnapshot: (snapshot: SnapshotMessage) => {
         world.applySnapshot(snapshot);
-
-        if (MVP_FLAGS.prediction) {
-          /* Reconcile prediction against the authority. `ackSeq` rides on our own
-             entity, so it arrives exactly once per snapshot. */
-          const self = world.self;
-          if (self !== undefined) {
-            const result = prediction.reconcile(
-              { x: self.x, y: self.y, rotation: self.rotation },
-              self.ackSeq ?? 0,
-            );
-            hud.setPredictionStats({
-              pending: prediction.pendingCount,
-              corrections: prediction.correctionCount,
-              error: result.error,
-              largest: prediction.largestCorrection,
-              recent: prediction.recentCorrections,
-              buffered: world.interpolation.bufferedFrames,
-              delayMs: world.interpolation.delayMs,
-              correcting: prediction.correcting,
-              offset: prediction.offset,
-              offsetRotation: prediction.offsetRotation,
-              maxOffset: prediction.maxOffset,
-              easeTau: prediction.easeTau,
-            });
-          }
-        }
 
         hud.setEntityCount(world.size, snapshot.tick, snapshot.full);
       },
@@ -238,27 +200,27 @@ export async function createGame(options: GameOptions): Promise<Game> {
     if (inputAccumulator > inputIntervalS * 4) inputAccumulator = inputIntervalS * 4;
 
     let sampledFrame: InputFrame | null = null;
-    let sampledSeq = sequence;
 
     while (inputAccumulator >= inputIntervalS) {
       inputAccumulator -= inputIntervalS;
       sequence += 1;
-      sampledFrame = input.snapshot(aimAt(input, camera, world));
-      sampledSeq = sequence;
+      sampledFrame = input.snapshot();
 
       connection.sendInput(sequence, world.tick, sampledFrame);
       hud.setInputState(sampledFrame, sequence);
     }
 
-    /* Prediction: off in the MVP, so the local ship is drawn where the server says it
-       is. The camera still follows it, which is what keeps input feeling connected
-       even though the pose is one tick old. */
-    if (MVP_FLAGS.prediction) {
-      prediction.update(Math.min(deltaMS / 1000, 0.25), sampledFrame, sampledSeq);
+    /* Clicks become target requests. Done here rather than in `Input` because only this
+       layer has the camera and the current snapshot to hit-test against. */
+    for (const click of input.drainClicks()) {
+      const point = camera.screenToWorld(click.x, click.y);
+      connection.sendTarget(world.npcAt(point.x, point.y));
     }
 
-    const authoritative = world.self;
-    const focus = MVP_FLAGS.prediction && prediction.ready ? prediction.actor : authoritative;
+    /* No prediction: the local ship is drawn exactly where the server says it is. The
+       camera still follows it, which is what keeps input feeling connected even though
+       the pose is one tick old. */
+    const focus = world.self;
 
     if (focus !== undefined && lastSelf?.dead !== true) {
       if (Math.hypot(camera.x - focus.x, camera.y - focus.y) > CAMERA_SNAP_DISTANCE) {
@@ -269,12 +231,11 @@ export async function createGame(options: GameOptions): Promise<Game> {
     }
 
     /* World feel: off in the MVP. */
-    worldObjects?.update(now, camera.viewport, MVP_FLAGS.prediction ? prediction.actor : null);
+    worldObjects?.update(now, camera.viewport, null);
 
-    /* Draw: interpolated poses when enabled, otherwise the last snapshot verbatim. */
-    const renderList = MVP_FLAGS.prediction
-      ? world.renderEntities(now, prediction.actor)
-      : world.renderEntitiesNow();
+    /* Draw the last snapshot verbatim. No interpolation, no prediction: the server is
+       the only thing that decides where a ship is. */
+    const renderList = world.renderEntitiesNow();
     entities.update(renderList, now);
     combat.update(renderList, now);
     /* Feed the ship's speed so the surface streams past in proportion to travel. With
@@ -290,7 +251,6 @@ export async function createGame(options: GameOptions): Promise<Game> {
         rendererName: app.renderer.name,
         entities: entities.drawnCount + combat.drawnCount,
         tick: world.tick,
-        buffered: MVP_FLAGS.interpolation ? world.interpolation.bufferedFrames : 0,
       },
       now,
     );
@@ -312,15 +272,6 @@ export async function createGame(options: GameOptions): Promise<Game> {
       app.destroy(true, { children: true });
     },
   };
-}
-
-/** Project the pointer into world space and turn it into an aim angle. */
-function aimAt(input: InputController, camera: Camera, world: ClientWorld): number | null {
-  const self = world.self;
-  if (self === undefined || !input.pointer.inside) return null;
-
-  const target = camera.screenToWorld(input.pointer.x, input.pointer.y);
-  return Math.atan2(target.y - self.y, target.x - self.x);
 }
 
 /** Short, player-facing text for a server event. */

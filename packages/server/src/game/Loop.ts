@@ -6,7 +6,6 @@ import {
   INPUT_STALE_AFTER_MS,
   MessageType,
   PLAYER_STATE_INTERVAL_TICKS,
-  AIM_ASSIST_FACTOR,
   SNAPSHOT_KEYFRAME_INTERVAL_TICKS,
   PROTOCOL_VERSION,
   SNAPSHOT_COORDINATE_DECIMALS,
@@ -27,6 +26,8 @@ import {
   type SnapshotMessage,
   type SnapshotEntity,
   MVP_FLAGS,
+  WORLD_HEIGHT,
+  WORLD_WIDTH,
   NPC_TIER_LEVEL,
   type UpgradeId,
 } from '@warship/shared';
@@ -46,6 +47,7 @@ import type { Npc } from './Npc.js';
 import type { Projectile } from './Projectile.js';
 import type { Player } from './Player.js';
 import { addXp, hullTierForLevel, purchasableUpgrades, purchaseUpgrade } from './Progression.js';
+import { canFire, selectTarget } from './Targeting.js';
 import type { World } from './World.js';
 
 /**
@@ -132,24 +134,37 @@ export class Loop {
   #stepPlayers(dt: number, tick: number): void {
     const now = performance.now();
 
+    /* One list of shootable things for every player this tick. With 100 players against
+       50 NPCs, rebuilding it per player would be 5 000 allocations per tick for an answer
+       that is identical for all of them. */
+    const candidates: { id: string; x: number; y: number }[] = [];
+    for (const npc of this.#world.npcs.values()) {
+      if (!npc.isAlive) continue;
+      candidates.push({ id: npc.id, x: npc.x, y: npc.y });
+    }
+
     for (const player of this.#world.allPlayers()) {
-      if (!player.isAlive) continue;
+      if (!player.isAlive) {
+        /* A dead ship holds no lock. Not strictly necessary — `die` already clears it —
+           but this keeps the invariant true from the outside: a `targetId` in a snapshot
+           always belongs to a ship that could actually shoot at it. */
+        player.targetId = null;
+        continue;
+      }
 
       // A stale intent (packet loss, tab in the background) must not keep pushing
       // the ship forever: the ship coasts instead of running on autopilot.
       const intent = this.#effectiveIntent(player, now);
       const stats = computeShipStats(player.shipClass, player.upgrades);
 
-      /* Movement lives in `@warship/shared` so the client's prediction and this step
-         are literally the same code. They used to be separate implementations, and
-         when aim became authoritative only this side learned about it: the client
-         kept predicting without it and rubber-banded forever. */
+      /* Movement is keyboard only now: `turn` and `throttle`, nothing else. The old
+         `aim` field swung the hull toward the cursor, which is exactly the thing
+         mouse-aim removal was meant to delete. */
       const next = stepShipMotion(
         { x: player.x, y: player.y, rotation: player.rotation, speed: player.speed },
-        { turn: intent.turn, throttle: intent.throttle, aim: intent.aim },
+        { turn: intent.turn, throttle: intent.throttle },
         { speed: stats.maxSpeed, turnRate: stats.turnRate },
         dt,
-        { aimAssistFactor: AIM_ASSIST_FACTOR },
       );
 
       const wrapped = wrapWorldPosition({ x: next.x, y: next.y });
@@ -158,25 +173,61 @@ export class Loop {
       player.rotation = next.rotation;
       player.speed = next.speed;
 
-      /* Firing. The reload gate is checked before spawning so a held trigger produces
-         exactly one shot per reload time, and `lastFiredTick` only advances on a shot
-         that actually left the barrel — a refused spawn (pool full) must not silently
-         consume the player's cooldown. */
-      const reloaded =
-        player.lastFiredTick === null ||
-        tick - player.lastFiredTick >= this.#reloadTicks(stats.reloadTime);
-      if (intent.firing && reloaded) {
-        const shot = this.#world.projectiles.spawn({
-          ownerId: player.id,
-          ownerIsNpc: false,
-          x: player.x,
-          y: player.y,
-          angle: player.rotation,
-          damage: stats.damage,
-          shipMaxSpeed: stats.maxSpeed,
-        });
-        if (shot !== null) player.lastFiredTick = tick;
+      /* Targeting and firing are one decision, server-side, every tick. The client sends
+         a target *request*; this is where it becomes or fails to become a shot. */
+      const target = selectTarget({
+        owner: player,
+        candidates,
+        manualTargetId: player.manualTargetId,
+        range: stats.range,
+        worldWidth: WORLD_WIDTH,
+        worldHeight: WORLD_HEIGHT,
+      });
+
+      player.targetId = target.id;
+
+      /* Clear a manual selection the moment it stops qualifying. Doing it here rather
+         than in the selection function keeps the selection pure, and means the client
+         sees the lock drop on the same frame the guns go quiet. */
+      if (player.manualTargetId !== null && player.manualTargetId !== target.id) {
+        player.manualTargetId = null;
       }
+
+      if (target.id === null) continue;
+
+      /* Fire automatically at whatever is selected. `canFire` applies both gates: the
+         weapon's cycle time and the hull's sustained rate. */
+      if (
+        !canFire({
+          tick,
+          lastFiredTick: player.lastFiredTick,
+          reloadTime: stats.reloadTime,
+          fireRate: stats.fireRate,
+          tickDurationS: TICK_DURATION_S,
+        })
+      ) {
+        continue;
+      }
+
+      /* The gun points at the target, not along the hull: with mouse aim gone the hull
+         cannot be expected to face the enemy, and requiring it would mean "steer at the
+         thing you are shooting" again by another name. Firing along the line to the
+         target is what makes `W` + a click a complete way to play.
+         `wrappedDelta` so a shot at something across the seam leaves the right way. */
+      const bearing = wrappedDelta(player, this.#targetPoint(target.id) ?? player);
+      const spawnAngle = Math.atan2(bearing.y, bearing.x);
+
+      const shot = this.#world.projectiles.spawn({
+        ownerId: player.id,
+        ownerIsNpc: false,
+        x: player.x,
+        y: player.y,
+        angle: spawnAngle,
+        damage: stats.damage,
+        shipMaxSpeed: stats.maxSpeed,
+      });
+      /* A refused spawn (pool full) must not silently consume the cooldown. */
+      if (shot !== null) player.lastFiredTick = tick;
     }
   }
 
@@ -200,8 +251,21 @@ export class Loop {
     for (const npc of this.#world.npcs.values()) {
       if (!npc.isAlive) continue;
 
-      const intent = npc.step(tick, targets);
-      if (!intent.firing) continue;
+      const intent = npc.step(targets);
+      if (!intent.wantsToFire) continue;
+
+      /* Same two gates the player's gun goes through: the AI asks, this decides. */
+      if (
+        !canFire({
+          tick,
+          lastFiredTick: npc.lastFiredTick,
+          reloadTime: npc.stats.reloadTime,
+          fireRate: npc.stats.fireRate,
+          tickDurationS: TICK_DURATION_S,
+        })
+      ) {
+        continue;
+      }
 
       const shot = this.#world.projectiles.spawn({
         ownerId: npc.id,
@@ -606,17 +670,18 @@ export class Loop {
   /** Neutral intent when the player has not sent anything recently. */
   #effectiveIntent(player: Player, now: number): InputFrame {
     if (player.intent === null) {
-      return { turn: 0, throttle: 0, aim: null, firing: false };
+      return { turn: 0, throttle: 0 };
     }
     if (now - player.lastInputAt > INPUT_STALE_AFTER_MS) {
-      return { turn: 0, throttle: 0, aim: player.intent.aim, firing: false };
+      return { turn: 0, throttle: 0 };
     }
     return player.intent;
   }
 
-  /** Reload time expressed in whole ticks, never less than one. */
-  #reloadTicks(reloadTime: number): number {
-    return Math.max(1, Math.round(reloadTime / TICK_DURATION_S));
+  /** Live position of an NPC by id, or `null` if it has gone. */
+  #targetPoint(id: string): { x: number; y: number } | null {
+    const npc = this.#world.npcs.get(id);
+    return npc?.isAlive === true ? { x: npc.x, y: npc.y } : null;
   }
 
   /* ------------------------------------------------------------------------ */

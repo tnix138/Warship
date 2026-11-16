@@ -5,7 +5,7 @@ This repository is a pnpm monorepo: shared contracts, the authoritative game ser
 
 - **Milestone 1 (done):** monorepo, shared contracts, WebSocket server, PixiJS client rendering a tiled ocean.
 - **Milestone 3 (current):** smooth motion and scale. Client-side **interpolation** (render 100 ms in the past), client-side **prediction** with server reconciliation, server-side **Area of Interest** culling on a spatial grid, and **delta compression** with 1 Hz keyframes. Snapshot traffic drops ~70% at 20 players.
-- **Milestone 2:** an **authoritative simulation at 20 Hz**. Players join, steer with WASD, aim with the mouse, and every client renders the same world from full snapshots. `World` / `Player` / `Grid` / `Loop` on the server, `Connection` / `ClientWorld` / `Input` / `EntityRenderer` on the client.
+- **Milestone 2:** an **authoritative simulation at 20 Hz**. Players join, steer with WASD, and every client renders the same world from full snapshots. Targeting and firing are decided by the server; the client only sends steering and a target selection. `World` / `Player` / `Grid` / `Loop` on the server, `Connection` / `ClientWorld` / `Input` / `EntityRenderer` on the client.
 - Still no NPCs, loot boxes, XP or persistence wiring — those arrive once the simulation loop is proven. Deliberately absent from the network layer: interpolation, prediction, delta compression, area-of-interest culling.
 
 ## Stack
@@ -63,6 +63,21 @@ pnpm dev:server        # shared build + server only
 pnpm dev:client        # shared build + client only
 ```
 
+## Controls
+
+| Input             | Action                                                         |
+| ----------------- | -------------------------------------------------------------- |
+| `W` / `S`         | ahead / astern                                                 |
+| `A` / `D`         | turn                                                           |
+| Click an enemy    | manual target (red ring); the guns then track it automatically |
+| Click empty water | drop the manual target and return to automatic targeting       |
+| Mouse wheel       | zoom                                                           |
+
+Firing is **automatic** and entirely server-side. The client sends steering and, on a
+click, one entity id; the server re-checks range and liveness every tick and decides
+what gets shot. There is no aim control and no trigger, so there is nothing for a
+client to lie about.
+
 ## Scripts
 
 | Script                 | Effect                                                            |
@@ -104,9 +119,10 @@ with the `warship` subprotocol. Defined in
 | `t` | Message        | Direction | Purpose                                                                   |
 | --- | -------------- | --------- | ------------------------------------------------------------------------- |
 | 101 | `JOIN`         | C → S     | requested ship class (`speed` / `normal` / `power`)                       |
-| 102 | `INPUT`        | C → S     | `{ seq, tick, input: { turn, throttle, aim, firing } }`                   |
+| 102 | `INPUT`        | C → S     | `{ seq, tick, input: { turn, throttle } }`                                |
 | 103 | `PICKUP`       | C → S     | box id (no boxes exist yet; the frame is parsed)                          |
 | 104 | `UPGRADE`      | C → S     | upgrade id (no dock UI yet; the frame is parsed)                          |
+| 105 | `TARGET`       | C → S     | `{ entityId: string \| null }` — manual lock, `null` returns to auto-aim  |
 | 201 | `WELCOME`      | S → C     | session, shard, tick, tick rate, world size                               |
 | 202 | `SNAPSHOT`     | S → C     | `{ tick, entities: [{ id, x, y, rotation, hp, shipClass }] }`, every tick |
 | 203 | `PLAYER_STATE` | S → C     | private state: hp, maxHp, level, xp, scrap, zone, upgrades                |
@@ -135,7 +151,7 @@ and counted, never buffered.
 | v1                  | v2                           | Change                                                       |
 | ------------------- | ---------------------------- | ------------------------------------------------------------ |
 | `1 Hello`           | `101 JOIN`                   | added `shipClass`; `client.version` kept                     |
-| —                   | `102 INPUT`                  | new: movement + aim + fire intent, 20 Hz                     |
+| —                   | `102 INPUT`                  | new: steering intent, 20 Hz                                  |
 | —                   | `103 PICKUP` / `104 UPGRADE` | new: parsed and attributed, no gameplay yet                  |
 | `10 Welcome`        | `201 WELCOME`                | added `tickRate`, `worldWidth`, `worldHeight`, `resumeToken` |
 | —                   | `202 SNAPSHOT`               | new: the world, every tick                                   |
@@ -147,11 +163,22 @@ and counted, never buffered.
 
 ## Assets
 
-`packages/client/public/assets` holds a seamless 256×256 water tile and three
-top-down hull sprites. **They are generated placeholders**, produced by
-`packages/client/scripts/generate-assets.mjs` (zero dependencies, deterministic
-PNG output). Replace the files with any licensed tileable water texture and
-top-down ship art of the same names; no code changes are required.
+`packages/client/public/assets` holds the water tile, one hull sprite per player
+class, one shared NPC hull, and two particle families (explosions and fire).
+
+**Ship and NPC sprites are the Kenney _Pirate Pack_ (CC0).** The NPC hull is shared
+by every tier on purpose: the tier is conveyed by **scale** (Coastal 0.7×, Raider
+1.0×, Warship 1.5×) and by a **threat ring** drawn under the hull (green / yellow /
+red), plus an always-visible health bar. One sprite plus those three cues is easier
+to read than three near-identical hulls at distance.
+
+The water tile was originally a generated placeholder
+(`packages/client/scripts/generate-assets.mjs`, zero dependencies, deterministic PNG
+output); the three original hull files are still present but unused.
+
+Sprite orientation is easy to get backwards: the art faces **south** (bow at the
+bottom of the image), so the renderer applies `-π/2` to line the art up with world
+rotation 0 = +x.
 
 ## Testing
 
@@ -167,6 +194,11 @@ symptom→cause table, and the reset that fixes a stale server after a `git pull
 - The simulation clock (`packages/server/src/sim/clock.ts`) is fixed-step and
   drift-free; it is not started yet because there is nothing to simulate.
 - `@warship/shared` must stay isomorphic — no `node:*`, no DOM.
+
+## Credits
+
+- Ship sprites from Kenney.nl (Pirate Pack), CC0.
+- Water tile and particle sprites generated in-repo (see `## Assets`).
 
 ## License
 

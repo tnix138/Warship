@@ -396,6 +396,10 @@ export function computeShipStats(
     armor,
     range: Math.round(range),
     reloadTime: Math.max(0.05, Math.round(reloadTime * 1000) / 1000),
+    /* Not an upgrade target today, so it passes through unscaled. A `Rapid Loader` that
+       shortened the cycle already covers "shoot faster"; a second multiplier here would
+       make the two compound invisibly. */
+    fireRate: base.fireRate,
   };
 }
 

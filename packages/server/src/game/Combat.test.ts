@@ -451,6 +451,7 @@ describe('Combat — hull tiers', () => {
       armor: 4,
       range: 500,
       reloadTime: 0.4,
+      fireRate: 2,
     };
 
     assert.deepEqual(statsForTier(stats, 1), stats);
@@ -466,6 +467,7 @@ describe('Combat — hull tiers', () => {
       armor: 4,
       range: 500,
       reloadTime: 0.4,
+      fireRate: 2,
     };
 
     const tier2 = statsForTier(stats, 1.2);
@@ -486,6 +488,7 @@ describe('Combat — hull tiers', () => {
       armor: 4,
       range: 500,
       reloadTime: 0.4,
+      fireRate: 2,
     };
 
     assert.ok(statsForTier(stats, 1.2).reloadTime < 0.4);

@@ -11,7 +11,6 @@ import {
   stepShipMotion,
   wrapWorldPosition,
   wrappedDelta,
-  type InputFrame,
   type NpcStats,
   type NpcTier,
   type SnapshotEntity,
@@ -119,17 +118,16 @@ export class Npc {
   /**
    * Advance one tick.
    *
-   * `targets` is whatever the loop considers a valid player; `now` is the tick, used
-   * only for the reload gate. Returns the intent that was actually used, which the
-   * caller feeds to the projectile spawner — the AI never creates projectiles itself,
-   * so there is exactly one place that enforces the cap and the reload rule.
+   * `targets` is whatever the loop considers a valid player. Returns the intent the AI
+   * wants, which the caller feeds to the projectile spawner — the AI never creates
+   * projectiles itself and no longer even knows whether it is allowed to fire, so there
+   * is exactly one place that enforces the cap and the reload rule for either faction.
    */
   step(
-    tick: number,
     targets: readonly { readonly id: string; readonly x: number; readonly y: number }[],
-  ): InputFrame {
+  ): NpcIntent {
     if (!this.isAlive) {
-      return { turn: 0, throttle: 0, aim: null, firing: false };
+      return { turn: 0, throttle: 0, aim: null, wantsToFire: false };
     }
 
     const nearest = this.#nearestTarget(targets);
@@ -137,7 +135,7 @@ export class Npc {
 
     this.#updateState(nearest, distance);
 
-    const intent = this.#intentFor(nearest, distance, tick);
+    const intent = this.#intentFor(nearest, distance);
     this.#applyMotion(intent);
     return intent;
   }
@@ -203,7 +201,7 @@ export class Npc {
    */
   #nearestTarget(
     targets: readonly { readonly id: string; readonly x: number; readonly y: number }[],
-  ): { id: string; dx: number; dy: number; distance: number } | null {
+  ): NearestTarget | null {
     const measured = new Map<string, { dx: number; dy: number; distance: number }>();
     for (const target of targets) {
       /* Wrapped, because the world is a torus: a target 5 units away across the seam is
@@ -251,18 +249,14 @@ export class Npc {
     this.state = distance <= this.stats.range ? NpcState.Engage : NpcState.Chase;
   }
 
-  #intentFor(
-    nearest: { id: string; dx: number; dy: number; distance: number } | null,
-    distance: number,
-    tick: number,
-  ): InputFrame {
+  #intentFor(nearest: NearestTarget | null, distance: number): NpcIntent {
     if (this.state === NpcState.Patrol || nearest === null) return this.#patrolIntent();
 
     const aim = Math.atan2(nearest.dy, nearest.dx);
 
     if (this.state === NpcState.Chase) {
       // Full ahead, pointing at the target.
-      return { turn: 0, throttle: 1, aim, firing: false };
+      return { turn: 0, throttle: 1, aim, wantsToFire: false };
     }
 
     /* In range. Close to a comfortable fraction of it, then hold station and shoot:
@@ -275,24 +269,21 @@ export class Npc {
        fire, because the player is always turning. Fire once the bow is roughly on
        target and let the projectile's own travel do the rest. */
     const aligned = Math.abs(angleDelta(this.rotation, aim)) < 0.35;
-    const reloaded =
-      this.lastFiredTick === null ||
-      tick - this.lastFiredTick >= reloadTicks(this.stats.reloadTime);
 
-    return { turn: 0, throttle, aim, firing: aligned && reloaded };
+    return { turn: 0, throttle, aim, wantsToFire: aligned };
   }
 
-  #patrolIntent(): InputFrame {
+  #patrolIntent(): NpcIntent {
     const toTarget = wrappedDelta(this, this.patrolTarget);
     const distance = Math.hypot(toTarget.x, toTarget.y);
 
     if (distance < 60) {
       this.patrolTarget = this.#pickPatrolPoint();
-      return { turn: 0, throttle: 0, aim: null, firing: false };
+      return { turn: 0, throttle: 0, aim: null, wantsToFire: false };
     }
 
     const aim = Math.atan2(toTarget.y, toTarget.x);
-    return { turn: 0, throttle: 0.45, aim, firing: false };
+    return { turn: 0, throttle: 0.45, aim, wantsToFire: false };
   }
 
   /** A deterministic point within the patrol radius of home. */
@@ -306,7 +297,7 @@ export class Npc {
     return { x: wrapped.x, y: wrapped.y };
   }
 
-  #applyMotion(intent: InputFrame): void {
+  #applyMotion(intent: NpcIntent): void {
     const next = stepShipMotion(
       { x: this.x, y: this.y, rotation: this.rotation, speed: this.speed },
       intent,
@@ -320,6 +311,43 @@ export class Npc {
     this.rotation = normalizeAngle(next.rotation);
     this.speed = next.speed;
   }
+}
+
+/**
+ * A target as the AI sees it: who, and where relative to this hull.
+ *
+ * `distance` is carried alongside `dx`/`dy` because every caller needs all three and
+ * recomputing a square root at each call site is how two of them end up disagreeing.
+ */
+interface NearestTarget {
+  readonly id: string;
+  readonly dx: number;
+  readonly dy: number;
+  readonly distance: number;
+}
+
+/**
+ * What an NPC wants to do this tick.
+ *
+ * Deliberately *not* `InputFrame`. Player input lost its `aim` field when mouse aiming
+ * was removed — the hull is keyboard-only and the server points the gun — but an NPC
+ * still has to steer toward its target, so it needs an aim angle of its own. Sharing one
+ * type between the two would have meant keeping a field on the wire that no longer means
+ * anything for players.
+ */
+export interface NpcIntent {
+  readonly turn: number;
+  readonly throttle: number;
+  /** Heading the hull should swing toward, or `null` to hold course. */
+  readonly aim: number | null;
+  /**
+   * Whether the AI would like to shoot this tick.
+   *
+   * A *request*, like a player's: the loop still applies `canFire` before spawning
+   * anything, so the weapon rules stay in exactly one place per faction and an NPC can
+   * never out-shoot its own stat block.
+   */
+  readonly wantsToFire: boolean;
 }
 
 /** Reload time expressed in whole ticks, never less than one. */

@@ -65,6 +65,18 @@ export class Player {
   /** Tick this player respawned on; used by the spawn shield and by the HUD. */
   respawnedAtTick: number | null = null;
 
+  /**
+   * Target the player asked for by clicking, or `null` for automatic.
+   *
+   * A *request*. It is re-validated against range and liveness every tick and cleared
+   * the moment it stops qualifying, so a stale id can never keep the guns pointed at
+   * something the player can no longer see.
+   */
+  manualTargetId: string | null = null;
+
+  /** Target the server actually chose this tick. `null` means the guns are silent. */
+  targetId: string | null = null;
+
   /* --- progression --- */
   level: number;
   xp: number;
@@ -187,6 +199,10 @@ export class Player {
       hp: this.hp,
       shipClass: this.shipClass,
       kind: EntityKind.Player,
+      /* Sent so the client can ring the enemy the server picked, rather than guessing.
+         Always present (including `null`) because "no target" is a meaningful change the
+         client has to be able to see. */
+      targetId: this.targetId,
       ...(shield > 0 ? { shield } : {}),
     };
   }
@@ -197,6 +213,10 @@ export class Player {
     this.diedAtTick = tick;
     this.speed = 0;
     this.intent = null;
+    /* A dead ship has no guns, so it must not keep a lock: leaving `targetId` set would
+       draw a targeting ring around an enemy for the whole respawn countdown. */
+    this.targetId = null;
+    this.manualTargetId = null;
   }
 
   /** Bring a dead player back at a spawn point with a shield, keeping progression. */

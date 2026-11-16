@@ -29,7 +29,6 @@ export interface DebugStats {
   readonly rendererName: string;
   readonly entities: number;
   readonly tick: number;
-  readonly buffered: number;
 }
 
 /** How long an event line stays on screen before it is removed. */
@@ -50,14 +49,6 @@ export class GameHud {
   readonly #renderer = document.getElementById('stat-renderer');
   readonly #entities = document.getElementById('stat-entities');
   readonly #tick = document.getElementById('stat-tick');
-  readonly #buffered = document.getElementById('stat-buffered');
-  readonly #pending = document.getElementById('stat-pending');
-  readonly #corrections = document.getElementById('stat-corrections');
-  readonly #offsetX = document.getElementById('stat-offset-x');
-  readonly #offsetRot = document.getElementById('stat-offset-rot');
-  readonly #maxOffset = document.getElementById('stat-max-offset');
-  readonly #easeTau = document.getElementById('stat-ease-tau');
-  readonly #predictionError = document.getElementById('stat-prediction-error');
   readonly #input = document.getElementById('stat-input');
   readonly #sent = document.getElementById('stat-sent');
 
@@ -79,20 +70,6 @@ export class GameHud {
   readonly #deathCountdown = document.getElementById('death-countdown');
 
   #lastDebugUpdate = 0;
-  #lastPrediction = {
-    pending: 0,
-    corrections: 0,
-    error: 0,
-    largest: 0,
-    recent: 0,
-    buffered: 0,
-    delayMs: 0,
-    correcting: false,
-    offset: 0,
-    offsetRotation: 0,
-    maxOffset: 0,
-    easeTau: 0.08,
-  };
   #lastHpText = '';
   #lastNetLabel = '';
   #lastXpText = '';
@@ -270,11 +247,6 @@ export class GameHud {
     setText(this.#tick, String(tick));
   }
 
-  /** Interpolation buffer depth, refreshed with the debug panel's 4 Hz cadence. */
-  setBufferDepth(frames: number): void {
-    setText(this.#buffered, String(frames));
-  }
-
   /**
    * Show the intent currently being sent, and how many INPUT frames have gone out.
    *
@@ -282,34 +254,15 @@ export class GameHud {
    * but the server ignores them": `sent` climbing with `input` showing `thr 1` means
    * the client is fine; `input –` while pressing W means the listener never fired.
    */
-  setInputState(frame: { turn: number; throttle: number; firing: boolean }, sent: number): void {
+  setInputState(frame: { turn: number; throttle: number }, sent: number): void {
     const parts: string[] = [];
     if (frame.throttle > 0) parts.push('thr +1');
     else if (frame.throttle < 0) parts.push('thr -1');
     if (frame.turn > 0) parts.push('turn +1');
     else if (frame.turn < 0) parts.push('turn -1');
-    if (frame.firing) parts.push('fire');
 
     setText(this.#input, parts.length === 0 ? '–' : parts.join(' '));
     setText(this.#sent, String(sent));
-  }
-
-  /** Prediction health: unacknowledged inputs, corrections and worst error. */
-  setPredictionStats(stats: {
-    pending: number;
-    corrections: number;
-    error: number;
-    largest: number;
-    recent: number;
-    buffered: number;
-    delayMs: number;
-    correcting: boolean;
-    offset: number;
-    offsetRotation: number;
-    maxOffset: number;
-    easeTau: number;
-  }): void {
-    this.#lastPrediction = stats;
   }
 
   /** Throttled to ~4 Hz: DOM writes every frame would be wasted layout work. */
@@ -328,28 +281,6 @@ export class GameHud {
     setText(this.#zoom, `${stats.zoom.toFixed(2)}×`);
     setText(this.#camera, `${stats.cameraX.toFixed(0)}, ${stats.cameraY.toFixed(0)}`);
     setText(this.#renderer, stats.rendererName);
-    /* The three numbers that actually explain a jitter complaint:
-       how deep the interpolation buffer is, how far ahead/behind our own prediction
-       sits, and how many corrections have been applied recently. */
-    const buffered = String(this.#lastPrediction.buffered);
-    setText(this.#buffered, `${buffered} frames (${String(this.#lastPrediction.delayMs)}ms)`);
-
-    setText(this.#pending, String(this.#lastPrediction.pending));
-    setText(this.#predictionError, `${this.#lastPrediction.error.toFixed(2)} units`);
-    setText(
-      this.#corrections,
-      `${String(this.#lastPrediction.recent)} (last 60s) · max ${this.#lastPrediction.largest.toFixed(1)}u`,
-    );
-
-    /* The four numbers that explain *why* a correction is visible: how far the drawn pose
-       is displaced right now, by how much in angle, the worst displacement seen recently,
-       and the time constant currently in use for easing it away. */
-    const offsetNow = this.#lastPrediction.offset;
-    const offsetSignX = offsetNow > 0 ? '+' : '';
-    setText(this.#offsetX, `${offsetSignX}${offsetNow.toFixed(2)} units`);
-    setText(this.#offsetRot, `${this.#lastPrediction.offsetRotation.toFixed(3)} rad`);
-    setText(this.#maxOffset, `${this.#lastPrediction.maxOffset.toFixed(1)} units (last 60s)`);
-    setText(this.#easeTau, `${(this.#lastPrediction.easeTau * 1000).toFixed(0)} ms`);
   }
 
   /* ------------------------------------------------------------------------ */

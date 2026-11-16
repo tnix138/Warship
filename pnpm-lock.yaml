@@ -51,6 +51,9 @@ importers:
         specifier: 8.23.0
         version: 8.23.0
     devDependencies:
+      tsx:
+        specifier: ^4.23.15
+        version: 4.23.15
       typescript:
         specifier: 5.9.3
         version: 5.9.3
@@ -1191,7 +1194,7 @@ packages:
     hasBin: true
 
   uWebSockets.js@https://codeload.github.com/uNetworking/uWebSockets.js/tar.gz/refs/tags/v20.52.0:
-    resolution: {gitHosted: true, tarball: https://codeload.github.com/uNetworking/uWebSockets.js/tar.gz/refs/tags/v20.52.0}
+    resolution: {gitHosted: true, integrity: sha512-xc/V00l/7J8Yvm3kLfBop+akQMzasNWQKgSnaMnw4hMSQ1YxewloZxabz35hvr6zdI4yt7yBPT9kkAq4ZpOu9g==, tarball: https://codeload.github.com/uNetworking/uWebSockets.js/tar.gz/refs/tags/v20.52.0}
     version: 20.52.0
 
   undici-types@6.21.0:

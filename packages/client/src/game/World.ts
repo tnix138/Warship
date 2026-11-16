@@ -54,6 +54,13 @@ export interface ClientEntity {
   tick: number;
   /** Newest input sequence the server has applied for this entity (self only). */
   ackSeq?: number;
+  /**
+   * For our own ship: the enemy the server is currently shooting at.
+   *
+   * Comes from the server rather than being recomputed here, so the ring can never
+   * disagree with the guns. `null` means "nothing selected". Absent on other entities.
+   */
+  targetId?: string | null;
 }
 
 /** What the renderer needs to draw one entity this frame. */
@@ -76,6 +83,8 @@ export interface RenderEntity {
   readonly boxKind?: BoxKind;
   /** Shield seconds left, for the invulnerability halo. */
   readonly shield: number;
+  /** True when the server currently has this entity locked (see `ClientEntity.targetId`). */
+  readonly targeted?: boolean;
 }
 
 export class ClientWorld {
@@ -178,6 +187,7 @@ export class ClientWorld {
    */
   renderEntitiesNow(): RenderEntity[] {
     const out: RenderEntity[] = [];
+    const lockedId = this.self?.targetId ?? null;
 
     for (const entity of this.entities.values()) {
       const isSelf = entity.id === this.selfId;
@@ -195,10 +205,33 @@ export class ClientWorld {
         ...(entity.npcTier === undefined ? {} : { npcTier: entity.npcTier }),
         ...(entity.boxKind === undefined ? {} : { boxKind: entity.boxKind }),
         shield: entity.shield,
+        ...(entity.id === lockedId && !isSelf ? { targeted: true } : {}),
       });
     }
 
     return out;
+  }
+
+  /**
+   * The enemy under a world-space point, or `null` for "empty water".
+   *
+   * A generous radius (a Warship at 1.5x is large) but not so generous that two ships
+   * side by side are ambiguous: the nearest centre wins, which is also what a player
+   * pointing at the overlap would expect.
+   */
+  npcAt(x: number, y: number, radius = 70): string | null {
+    let bestId: string | null = null;
+    let bestDistance = Infinity;
+
+    for (const entity of this.entities.values()) {
+      if (entity.kind !== 'npc') continue;
+      const distance = Math.hypot(entity.x - x, entity.y - y);
+      if (distance > radius || distance >= bestDistance) continue;
+      bestDistance = distance;
+      bestId = entity.id;
+    }
+
+    return bestId;
   }
 
   /**
@@ -325,6 +358,7 @@ export class ClientWorld {
         ...(entity.npcTier === undefined ? {} : { npcTier: entity.npcTier }),
         ...(entity.boxKind === undefined ? {} : { boxKind: entity.boxKind }),
         ...(entity.ackSeq === undefined ? {} : { ackSeq: entity.ackSeq }),
+        ...(entity.targetId === undefined ? {} : { targetId: entity.targetId }),
       });
       return;
     }
@@ -344,5 +378,8 @@ export class ClientWorld {
        re-stated and always assigned. */
     existing.shield = entity.shield ?? 0;
     if (entity.ackSeq !== undefined) existing.ackSeq = entity.ackSeq;
+    /* Like the shield, this must be able to fall back to `null`: dropping a lock is a
+       real change the client has to see, so an explicit `null` is assigned. */
+    if (entity.targetId !== undefined) existing.targetId = entity.targetId;
   }
 }
