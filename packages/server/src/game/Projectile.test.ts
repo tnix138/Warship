@@ -27,6 +27,9 @@ function spawnAt(pool: ProjectilePool, x: number, y: number, angle = 0): void {
     angle,
     damage: 10,
     shipMaxSpeed: 240,
+    /* Comfortably larger than any distance these tests cover, so they keep testing
+       pooling and not range expiry. Range itself is asserted separately. */
+    range: 100_000,
   });
 }
 
@@ -45,6 +48,7 @@ describe('Projectile — pool capacity', () => {
       angle: 0,
       damage: 1,
       shipMaxSpeed: 240,
+      range: 100_000,
     });
     const north = pool.spawn({
       ownerId: 'p',
@@ -54,6 +58,7 @@ describe('Projectile — pool capacity', () => {
       angle: Math.PI / 2,
       damage: 1,
       shipMaxSpeed: 240,
+      range: 100_000,
     });
 
     assert.notEqual(east, null);
@@ -87,6 +92,7 @@ describe('Projectile — pool capacity', () => {
       angle: 0,
       damage: 1,
       shipMaxSpeed: 240,
+      range: 100_000,
     });
     assert.notEqual(first, null);
     if (first === null) return;
@@ -126,6 +132,55 @@ describe('Projectile — lifetime', () => {
     for (let index = 0; index < ticks; index += 1) pool.advance();
 
     assert.equal(pool.liveCount, 1, `should still be live after ${String(ticks)} ticks`);
+  });
+
+  test('a shot dies at its weapon range, not at a fixed lifetime', () => {
+    /* The bug this pins: lifetime used to be a flat `PROJECTILE_LIFETIME_S`, so a shot's
+       reach was a property of how fast the bullet flew rather than of the weapon that
+       fired it. A Speed hull (600 range) was landing hits at 1920 units; a Coastal
+       (430 range) at 900. Range is now the distance budget and the timer is derived
+       from it. */
+    const pool = new ProjectilePool(4);
+    const speed = 720; // normal hull: 240 * 3
+    pool.spawn({
+      ownerId: 'p',
+      ownerIsNpc: false,
+      x: 4_000,
+      y: 4_000,
+      angle: 0,
+      damage: 1,
+      shipMaxSpeed: 240,
+      range: 800,
+    });
+
+    const live = [...pool.live()][0];
+    assert.notEqual(live, undefined);
+    /* `lifeS * speed` must equal the range. Anything above means the shot out-reaches
+       its weapon; anything below means players cannot hit at their own stated range. */
+    const reach = (live?.lifeS ?? 0) * speed;
+    assert.ok(
+      Math.abs(reach - 800) < 1,
+      `a 800-unit shot should die at 800 units, computed reach was ${reach.toFixed(1)}`,
+    );
+  });
+
+  test('a very long range is still capped by the safety lifetime', () => {
+    /* The derived timer is a *cap by range*, not a licence for infinite shots: the
+       global maximum still applies, or a stray round would cross the whole map. */
+    const pool = new ProjectilePool(4);
+    pool.spawn({
+      ownerId: 'p',
+      ownerIsNpc: false,
+      x: 0,
+      y: 0,
+      angle: 0,
+      damage: 1,
+      shipMaxSpeed: 60, // slow hull -> slow shot -> long derived timer
+      range: 1_000_000,
+    });
+
+    const live = [...pool.live()][0];
+    assert.equal(live?.lifeS, PROJECTILE_LIFETIME_S, 'the global cap must win');
   });
 
   test('a released slot is reusable at once', () => {
@@ -173,6 +228,7 @@ describe('Projectile — world wrapping', () => {
       angle: 0,
       damage: 1,
       shipMaxSpeed: 240,
+      range: 100_000,
     });
     assert.notEqual(shot, null);
     if (shot === null) return;
@@ -197,6 +253,7 @@ describe('Projectile — world wrapping', () => {
       angle: 0,
       damage: 1,
       shipMaxSpeed: 240,
+      range: 100_000,
     });
     assert.notEqual(shot, null);
     if (shot === null) return;
@@ -254,6 +311,7 @@ describe('Projectile — clearing', () => {
       angle: 0,
       damage: 1,
       shipMaxSpeed: 240,
+      range: 100_000,
     });
     assert.notEqual(shot, null);
     if (shot === null) return;

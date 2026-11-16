@@ -117,6 +117,15 @@ export class ProjectilePool {
     readonly damage: number;
     /** Firing ship's top speed, used to scale the shot's velocity. */
     readonly shipMaxSpeed: number;
+    /**
+     * Weapon range in world units. The shot expires once it has travelled this far.
+     *
+     * Required, not optional: a shot that outlives its weapon's range is the bug this
+     * parameter exists to prevent, and an optional one would let a future call site
+     * forget it and silently restore the old behaviour (where a 600-range Speed hull
+     * was landing hits 1920 units away, because the timer was a flat 2 s).
+     */
+    readonly range: number;
   }): Projectile | null {
     const projectile = this.#acquire();
     if (projectile === null) {
@@ -144,7 +153,12 @@ export class ProjectilePool {
     projectile.vx = cos * speed;
     projectile.vy = sin * speed;
     projectile.damage = options.damage;
-    projectile.lifeS = PROJECTILE_LIFETIME_S;
+    /* Time to cross the weapon's range, capped by the global ceiling.
+       Derived rather than fixed: `PROJECTILE_LIFETIME_S` is a safety net for a shot
+       that somehow never hits anything, not a balance knob. Tying the two together
+       means "range" is a property of the *weapon*, which is what the stats say it is,
+       instead of a property of how fast the bullet happens to fly. */
+    projectile.lifeS = Math.min(PROJECTILE_LIFETIME_S, options.range / speed);
     return projectile;
   }
 

@@ -225,6 +225,7 @@ export class Loop {
         angle: spawnAngle,
         damage: stats.damage,
         shipMaxSpeed: stats.maxSpeed,
+        range: stats.range,
       });
       /* A refused spawn (pool full) must not silently consume the cooldown. */
       if (shot !== null) player.lastFiredTick = tick;
@@ -292,6 +293,10 @@ export class Loop {
         angle: npc.rotation,
         damage: npc.stats.damage,
         shipMaxSpeed: npc.stats.maxSpeed,
+        /* The NPC fires along its hull, so its shot must not out-reach the range its AI
+           thinks it has — otherwise it damages ships it has already decided are out of
+           engagement. */
+        range: npc.stats.range,
       });
       if (shot !== null) npc.lastFiredTick = tick;
     }

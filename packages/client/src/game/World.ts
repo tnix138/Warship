@@ -36,7 +36,17 @@ export interface ClientEntity {
   y: number;
   rotation: number;
   hp: number;
-  shipClass: ShipClass;
+  /**
+   * Hull class, for players only.
+   *
+   * Optional because NPCs and projectiles do not have one — they are not playable
+   * hulls, and inventing a class for them is how the bug that hid every enemy got in:
+   * this field used to be required, and `#upsert` silently dropped any entity that
+   * lacked it ("can never happen on a full frame" — it happened on every frame, for
+   * every NPC and every shot). An NPC's size and colour come from `npcTier`; a
+   * projectile's comes from `kind`.
+   */
+  shipClass?: ShipClass;
   /**
    * What this id is.
    *
@@ -70,7 +80,8 @@ export interface RenderEntity {
   readonly y: number;
   readonly rotation: number;
   readonly hp: number;
-  readonly shipClass: ShipClass;
+  /** Hull class, for players only. See `ClientEntity.shipClass`. */
+  readonly shipClass?: ShipClass;
   /** 0..1, used for the removal fade. `1` for anything alive. */
   readonly alpha: number;
   /** True for the local player, whose pose comes from prediction instead. */
@@ -344,17 +355,23 @@ export class ClientWorld {
     const existing = this.entities.get(entity.id);
 
     if (existing === undefined) {
-      if (entity.shipClass === undefined) return; // can never happen on a full frame
+      /* Deliberately *not* gated on `shipClass`.
+         It looks like a sensible guard — a ship record without a class is incomplete —
+         but only players have a class, so the guard discarded every NPC and every
+         projectile before they could be stored. The symptom was not "a field is
+         missing": it was an empty sea with the player shooting at things that were
+         never drawn. `kind` is the field that is actually always present, and it is
+         what the renderer switches on. */
       this.entities.set(entity.id, {
         id: entity.id,
         x: entity.x,
         y: entity.y,
         rotation: entity.rotation,
         hp: entity.hp,
-        shipClass: entity.shipClass,
         kind: entity.kind ?? 'player',
         shield: entity.shield ?? 0,
         tick,
+        ...(entity.shipClass === undefined ? {} : { shipClass: entity.shipClass }),
         ...(entity.npcTier === undefined ? {} : { npcTier: entity.npcTier }),
         ...(entity.boxKind === undefined ? {} : { boxKind: entity.boxKind }),
         ...(entity.ackSeq === undefined ? {} : { ackSeq: entity.ackSeq }),
