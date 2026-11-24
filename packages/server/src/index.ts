@@ -2,6 +2,7 @@ import { PROTOCOL_VERSION, TICK_RATE } from '@warship/shared';
 
 import { loadConfig } from './config.js';
 import { createLogger } from './logger.js';
+import { WarshipDatabase } from './db/Database.js';
 import { NetworkServer } from './net/server.js';
 import { SimulationClock } from './sim/clock.js';
 
@@ -43,6 +44,8 @@ async function main(): Promise<void> {
     },
   });
 
+  const db = new WarshipDatabase(process.env['WARSHIP_DB_FILE'] ?? 'data/warship.sqlite');
+
   const server = new NetworkServer({
     host: config.host,
     port: config.port,
@@ -62,6 +65,7 @@ async function main(): Promise<void> {
     logger.info('shutting down', { signal });
     clock.stop();
     server.close();
+    db.close();
     process.exitCode = 0;
   };
 
