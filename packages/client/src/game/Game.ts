@@ -18,6 +18,7 @@ import { Connection } from '../net/Connection';
 import { loadTextures } from '../render/assets';
 import { Camera } from '../render/camera';
 import { CombatRenderer } from '../render/CombatRenderer';
+import { SoundManager } from '../audio/SoundManager';
 import { EntityRenderer } from '../render/EntityRenderer';
 import { Ocean } from '../render/ocean';
 import { WorldObjects } from '../render/WorldObjects';
@@ -101,6 +102,7 @@ export async function createGame(options: GameOptions): Promise<Game> {
   /* NPC hulls, shots and crates. Above the ships so a tracer reads as passing over a
      deck, and in world space so they pan and zoom with everything else. */
   const combat = new CombatRenderer();
+  const sound = new SoundManager();
   camera.world.addChild(combat.view);
 
   const input = new InputController(options.canvas);
@@ -153,6 +155,11 @@ export async function createGame(options: GameOptions): Promise<Game> {
       },
       onEvent: (event) => {
         hud.pushEvent(describeEvent(event.kind, event.data));
+        if (event.kind === 'kill') {
+          sound.playExplosion();
+        } else if (event.kind === 'pickup' || event.kind === 'levelup') {
+          sound.playPickup();
+        }
 
         /* A level-up is the one event that needs a decision, so it opens the picker.
            The server sent the choices; the HUD only renders them. */

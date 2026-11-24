@@ -14,6 +14,7 @@ import {
   UPGRADE_CHOICES,
   computeShipStats,
   levelFromXp,
+  resolveIslandCollision,
   stepShipMotion,
   wrappedDelta,
   wrapWorldPosition,
@@ -168,10 +169,11 @@ export class Loop {
       );
 
       const wrapped = wrapWorldPosition({ x: next.x, y: next.y });
-      player.x = wrapped.x;
-      player.y = wrapped.y;
+      const resolved = resolveIslandCollision(wrapped.x, wrapped.y, 28);
+      player.x = resolved.x;
+      player.y = resolved.y;
       player.rotation = next.rotation;
-      player.speed = next.speed;
+      player.speed = resolved.collided ? next.speed * 0.5 : next.speed;
 
       /* Targeting and firing are one decision, server-side, every tick. The client sends
          a target *request*; this is where it becomes or fails to become a shot. */

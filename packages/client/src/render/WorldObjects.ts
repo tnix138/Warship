@@ -1,6 +1,6 @@
 import { Container, Graphics } from 'pixi.js';
 
-import { WORLD_HEIGHT, WORLD_WIDTH } from '@warship/shared';
+import { ISLANDS, WORLD_HEIGHT, WORLD_WIDTH } from '@warship/shared';
 
 import { buoysNear, type Buoy } from './buoys';
 
@@ -81,7 +81,19 @@ export class WorldObjects {
     this.view.addChild(this.#grid, this.#buoyLayer, this.#wakeLayer);
     this.view.eventMode = 'none';
 
+    this.#drawIslands();
     this.#buildWakePool();
+  }
+
+  #drawIslands(): void {
+    const g = new Graphics();
+    for (const island of ISLANDS) {
+      // Shallow water / sand ring
+      g.circle(island.x, island.y, island.radius).fill({ color: 0xd9c28c, alpha: 0.95 });
+      // Inner terrain
+      g.circle(island.x, island.y, island.radius * 0.78).fill({ color: 0x3b6e38, alpha: 1 });
+    }
+    this.view.addChildAt(g, 1);
   }
 
   /**
